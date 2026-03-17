@@ -63,6 +63,11 @@ type Querier interface {
 	// Pass NULL for any filter to skip it; the handler maps "" → nil for that purpose.
 	// Joins employee_details so only users with an employee profile are returned.
 	ListEmployees(ctx context.Context, arg ListEmployeesParams) ([]ListEmployeesRow, error)
+	// ─── Client search (Autocomplete / Infinite Scroll) ───────────────────────────
+	// Returns clients matching an optional query string against first_name, last_name,
+	// or email, ordered by created_at DESC. Pass NULL for query to return all clients.
+	// Request limit+1 rows from the caller to support has_more detection.
+	SearchClients(ctx context.Context, arg SearchClientsParams) ([]SearchClientsRow, error)
 	// Marks the token as consumed so it cannot be replayed (Issue 11 edge case).
 	MarkVerificationTokenUsed(ctx context.Context, id int64) error
 	// ─── Password update ──────────────────────────────────────────────────────────

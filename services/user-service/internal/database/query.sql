@@ -119,6 +119,27 @@ WHERE user_id = $1;
 -- Called before re-assigning the full permission set in UpdateEmployee.
 DELETE FROM user_permissions WHERE user_id = $1;
 
+-- ─── Client search (Autocomplete / Infinite Scroll) ──────────────────────────
+
+-- name: SearchClients :many
+-- Returns clients matching an optional query string against first_name, last_name,
+-- or email. Ordered by created_at DESC (newest first) with LIMIT/OFFSET pagination.
+-- Pass NULL for query to skip the filter and return all clients.
+-- The caller should request limit+1 rows to detect has_more without a COUNT query.
+SELECT
+    u.id,
+    u.first_name,
+    u.last_name,
+    u.email
+FROM users u
+WHERE u.user_type = 'CLIENT'
+AND (sqlc.narg('query')::text IS NULL
+     OR u.first_name ILIKE '%' || sqlc.narg('query')::text || '%'
+     OR u.last_name  ILIKE '%' || sqlc.narg('query')::text || '%'
+     OR u.email      ILIKE '%' || sqlc.narg('query')::text || '%')
+ORDER BY u.created_at DESC
+LIMIT $1 OFFSET $2;
+
 -- ─── Authentication ───────────────────────────────────────────────────────────
 
 -- name: GetUserByEmail :one

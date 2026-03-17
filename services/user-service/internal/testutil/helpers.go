@@ -9,8 +9,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc/metadata"
 
-	"banka-backend/services/user-service/internal/interceptor"
-	"banka-backend/services/user-service/internal/utils"
+	auth "banka-backend/shared/auth"
 )
 
 // Fixed secrets used across all user-service tests. Using constants keeps
@@ -24,7 +23,7 @@ const (
 // AdminContext returns a context with ADMIN JWT claims pre-injected via the
 // same key the production interceptor uses. No real JWT is created or verified.
 func AdminContext() context.Context {
-	return interceptor.NewContextWithClaims(context.Background(), &utils.AccessClaims{
+	return auth.NewContextWithClaims(context.Background(), &auth.AccessClaims{
 		Email:       "admin@test.com",
 		UserType:    "ADMIN",
 		Permissions: []string{},
@@ -38,7 +37,7 @@ func AdminContext() context.Context {
 
 // EmployeeContext returns a context with EMPLOYEE claims + the given permission codes.
 func EmployeeContext(userID string, permissions []string) context.Context {
-	return interceptor.NewContextWithClaims(context.Background(), &utils.AccessClaims{
+	return auth.NewContextWithClaims(context.Background(), &auth.AccessClaims{
 		Email:       "employee@test.com",
 		UserType:    "EMPLOYEE",
 		Permissions: permissions,
@@ -59,19 +58,19 @@ func UnauthenticatedContext() context.Context {
 // MakeAccessToken signs a real access token with TestAccessSecret.
 // Useful when testing the auth interceptor itself, where a real JWT is needed.
 func MakeAccessToken(userID, email, userType string, permissions []string) string {
-	token, _ := utils.GenerateAccessToken(userID, email, userType, permissions, TestAccessSecret)
+	token, _ := auth.GenerateAccessToken(userID, email, userType, permissions, TestAccessSecret)
 	return token
 }
 
 // MakeActivationToken signs a real activation token with TestActivationSecret.
 func MakeActivationToken(email string) string {
-	token, _ := utils.GenerateActivationToken(email, TestActivationSecret)
+	token, _ := auth.GenerateActivationToken(email, TestActivationSecret)
 	return token
 }
 
 // MakeResetToken signs a real password-reset token with TestActivationSecret.
 func MakeResetToken(email string) string {
-	token, _ := utils.GenerateResetToken(email, TestActivationSecret)
+	token, _ := auth.GenerateResetToken(email, TestActivationSecret)
 	return token
 }
 

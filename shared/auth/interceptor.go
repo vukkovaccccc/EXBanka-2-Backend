@@ -1,12 +1,9 @@
-// Package interceptor provides gRPC server-side interceptors.
-package interceptor
+// Package auth provides gRPC server-side auth interceptors, shared across all microservices.
+package auth
 
 import (
 	"context"
 	"strings"
-
-	pb "banka-backend/proto/user"
-	"banka-backend/services/user-service/internal/utils"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -17,35 +14,30 @@ import (
 // contextKey is an unexported type to prevent key collisions in context values.
 type contextKey string
 
-// claimsKey is the key under which *utils.AccessClaims is stored in the context.
+// claimsKey is the key under which *AccessClaims is stored in the context.
 const claimsKey contextKey = "jwt_claims"
-
-// publicMethods lists RPC full-method paths that do NOT require a valid JWT.
-// Uses proto-generated constants to avoid typos and keep this in sync with the proto.
-var publicMethods = map[string]struct{}{
-	pb.UserService_HealthCheck_FullMethodName:     {},
-	pb.UserService_Login_FullMethodName:           {},
-	pb.UserService_SetPassword_FullMethodName:     {}, // activation token is the credential, no access token
-	pb.UserService_ActivateAccount_FullMethodName: {},
-	pb.UserService_RefreshToken_FullMethodName:    {}, // carries a refresh token, not an access token
-	pb.UserService_ForgotPassword_FullMethodName:  {}, // unauthenticated — only an email is provided
-	pb.UserService_ResetPassword_FullMethodName:   {}, // reset token is the credential, no access token
-}
 
 // AuthInterceptor verifies JWT access tokens on all protected RPCs.
 type AuthInterceptor struct {
-	accessSecret string
+	accessSecret  string
+	publicMethods map[string]struct{}
 }
 
 // NewAuthInterceptor constructs an AuthInterceptor using the given HMAC secret.
-func NewAuthInterceptor(accessSecret string) *AuthInterceptor {
-	return &AuthInterceptor{accessSecret: accessSecret}
+// publicMethods is a list of gRPC full-method paths (e.g. "/proto.UserService/Login")
+// that bypass token validation — any other route requires a valid Bearer token.
+func NewAuthInterceptor(accessSecret string, publicMethods []string) *AuthInterceptor {
+	pm := make(map[string]struct{}, len(publicMethods))
+	for _, m := range publicMethods {
+		pm[m] = struct{}{}
+	}
+	return &AuthInterceptor{accessSecret: accessSecret, publicMethods: pm}
 }
 
 // Unary returns a grpc.UnaryServerInterceptor that:
 //  1. Skips auth for whitelisted public methods.
 //  2. Extracts the Bearer token from the incoming "authorization" metadata header.
-//  3. Verifies the token and injects *utils.AccessClaims into the context.
+//  3. Verifies the token and injects *AccessClaims into the context.
 func (a *AuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -53,7 +45,7 @@ func (a *AuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		if _, public := publicMethods[info.FullMethod]; public {
+		if _, public := a.publicMethods[info.FullMethod]; public {
 			return handler(ctx, req)
 		}
 
@@ -68,14 +60,23 @@ func (a *AuthInterceptor) Unary() grpc.UnaryServerInterceptor {
 
 // ClaimsFromContext retrieves the access claims injected by AuthInterceptor.
 // Returns (nil, false) on public routes where no claims are present.
-func ClaimsFromContext(ctx context.Context) (*utils.AccessClaims, bool) {
-	claims, ok := ctx.Value(claimsKey).(*utils.AccessClaims)
+func ClaimsFromContext(ctx context.Context) (*AccessClaims, bool) {
+	claims, ok := ctx.Value(claimsKey).(*AccessClaims)
 	return claims, ok
+}
+
+// NewContextWithClaims injects pre-built JWT access claims into ctx using the
+// same context key that the production Unary() interceptor uses.
+//
+// Intended exclusively for unit tests where you want to simulate an
+// authenticated gRPC request without running the full interceptor chain.
+func NewContextWithClaims(ctx context.Context, claims *AccessClaims) context.Context {
+	return context.WithValue(ctx, claimsKey, claims)
 }
 
 // extractClaims reads and validates the Bearer token from incoming gRPC metadata.
 // gRPC-Gateway forwards the HTTP Authorization header as lowercase "authorization".
-func (a *AuthInterceptor) extractClaims(ctx context.Context) (*utils.AccessClaims, error) {
+func (a *AuthInterceptor) extractClaims(ctx context.Context) (*AccessClaims, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing metadata")
@@ -92,7 +93,7 @@ func (a *AuthInterceptor) extractClaims(ctx context.Context) (*utils.AccessClaim
 	}
 	tokenStr := strings.TrimPrefix(raw, "Bearer ")
 
-	claims, err := utils.VerifyToken(tokenStr, a.accessSecret)
+	claims, err := VerifyToken(tokenStr, a.accessSecret)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "invalid token: %v", err)
 	}

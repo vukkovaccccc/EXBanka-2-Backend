@@ -529,6 +529,70 @@ func (q *Queries) ListEmployees(ctx context.Context, arg ListEmployeesParams) ([
 	return items, nil
 }
 
+const searchClients = `-- name: SearchClients :many
+SELECT
+    u.id,
+    u.first_name,
+    u.last_name,
+    u.email
+FROM users u
+WHERE u.user_type = 'CLIENT'
+AND ($3::text IS NULL
+     OR u.first_name ILIKE '%' || $3::text || '%'
+     OR u.last_name  ILIKE '%' || $3::text || '%'
+     OR u.email      ILIKE '%' || $3::text || '%')
+ORDER BY u.created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type SearchClientsParams struct {
+	Limit  int32          `json:"limit"`
+	Offset int32          `json:"offset"`
+	Query  sql.NullString `json:"query"`
+}
+
+type SearchClientsRow struct {
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Email     string `json:"email"`
+}
+
+// ─── Client search (Autocomplete / Infinite Scroll) ───────────────────────────
+// Returns clients matching an optional query string with pagination.
+// Pass NULL for query to return all clients.
+func (q *Queries) SearchClients(ctx context.Context, arg SearchClientsParams) ([]SearchClientsRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchClients,
+		arg.Limit,
+		arg.Offset,
+		arg.Query,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchClientsRow{}
+	for rows.Next() {
+		var i SearchClientsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FirstName,
+			&i.LastName,
+			&i.Email,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markVerificationTokenUsed = `-- name: MarkVerificationTokenUsed :exec
 UPDATE verification_tokens
 SET used_at = NOW()

@@ -894,3 +894,142 @@ func matchEmailType(evType string) interface{} {
 		return e.Type == evType
 	})
 }
+
+// ─── CreateClient ─────────────────────────────────────────────────────────────
+
+func TestCreateClient(t *testing.T) {
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		setup     func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher)
+		req       *pb.CreateClientRequest
+		wantCode  codes.Code
+		checkResp func(t *testing.T, r *pb.CreateClientResponse)
+	}{
+		{
+			name:     "permission denied — caller is ADMIN",
+			ctx:      testutil.AdminContext(),
+			setup:    func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req:      &pb.CreateClientRequest{Email: "c@test.com", FirstName: "Ana", LastName: "Anić"},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "permission denied — unauthenticated",
+			ctx:      testutil.UnauthenticatedContext(),
+			setup:    func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req:      &pb.CreateClientRequest{Email: "c@test.com", FirstName: "Ana", LastName: "Anić"},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "missing email",
+			ctx:      testutil.EmployeeContext("2", []string{}),
+			setup:    func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req:      &pb.CreateClientRequest{FirstName: "Ana", LastName: "Anić"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "missing first name",
+			ctx:      testutil.EmployeeContext("2", []string{}),
+			setup:    func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req:      &pb.CreateClientRequest{Email: "c@test.com", LastName: "Anić"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "missing last name",
+			ctx:      testutil.EmployeeContext("2", []string{}),
+			setup:    func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req:      &pb.CreateClientRequest{Email: "c@test.com", FirstName: "Ana"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:  "birth date in the future",
+			ctx:   testutil.EmployeeContext("2", []string{}),
+			setup: func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {},
+			req: &pb.CreateClientRequest{
+				Email:     "c@test.com",
+				FirstName: "Ana",
+				LastName:  "Anić",
+				BirthDate: time.Now().UnixMilli() + 86400000,
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "email already registered",
+			ctx:  testutil.EmployeeContext("2", []string{}),
+			setup: func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {
+				q.On("CreateUser", mock.Anything, mock.Anything).
+					Return(sqlc.CreateUserRow{}, pgDupErr())
+			},
+			req:      &pb.CreateClientRequest{Email: "taken@test.com", FirstName: "Ana", LastName: "Anić"},
+			wantCode: codes.AlreadyExists,
+		},
+		{
+			name: "db error",
+			ctx:  testutil.EmployeeContext("2", []string{}),
+			setup: func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {
+				q.On("CreateUser", mock.Anything, mock.Anything).
+					Return(sqlc.CreateUserRow{}, errors.New("db down"))
+			},
+			req:      &pb.CreateClientRequest{Email: "c@test.com", FirstName: "Ana", LastName: "Anić"},
+			wantCode: codes.Internal,
+		},
+		{
+			name: "success — user_type CLIENT, password empty, activation email sent",
+			ctx:  testutil.EmployeeContext("2", []string{}),
+			setup: func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {
+				q.On("CreateUser", mock.Anything, mock.MatchedBy(func(p sqlc.CreateUserParams) bool {
+					return p.UserType == "CLIENT" &&
+						p.Email == "new@test.com" &&
+						p.PasswordHash == "" &&
+						p.SaltPassword == ""
+				})).Return(sqlc.CreateUserRow{ID: 42, Email: "new@test.com"}, nil)
+				pub.On("Publish", mock.MatchedBy(func(e utils.EmailEvent) bool {
+					return e.Type == "ACTIVATION" && e.Email == "new@test.com" && e.Token != ""
+				})).Return(nil)
+			},
+			req: &pb.CreateClientRequest{
+				Email:     "new@test.com",
+				FirstName: "Ana",
+				LastName:  "Anić",
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.CreateClientResponse) {
+				assert.Equal(t, int64(42), r.Id)
+				assert.Equal(t, "new@test.com", r.Email)
+			},
+		},
+		{
+			name: "success — publish failure is non-fatal",
+			ctx:  testutil.EmployeeContext("2", []string{}),
+			setup: func(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) {
+				q.On("CreateUser", mock.Anything, mock.Anything).
+					Return(sqlc.CreateUserRow{ID: 99, Email: "ok@test.com"}, nil)
+				pub.On("Publish", mock.Anything).Return(errors.New("rabbitmq down"))
+			},
+			req:      &pb.CreateClientRequest{Email: "ok@test.com", FirstName: "Marko", LastName: "Marković"},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.CreateClientResponse) {
+				assert.Equal(t, int64(99), r.Id)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mocks.MockQuerier{}
+			pub := &mocks.MockEmailPublisher{}
+			tt.setup(q, pub)
+			h := newHandler(q, pub)
+
+			resp, err := h.CreateClient(tt.ctx, tt.req)
+			assert.Equal(t, tt.wantCode, grpcCode(err))
+			if tt.checkResp != nil {
+				require.NoError(t, err)
+				tt.checkResp(t, resp)
+			}
+			q.AssertExpectations(t)
+			pub.AssertExpectations(t)
+		})
+	}
+}
+

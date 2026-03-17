@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package banka.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "banka-backend/proto/banka;bankav1";
+
+// ─── Valute ───────────────────────────────────────────────────────────────────
+
+// Currency predstavlja podržanu valutu u sistemu.
+message Currency {
+  int64  id     = 1;
+  string naziv  = 2; // e.g. "Srpski dinar"
+  string oznaka = 3; // ISO 4217 kod, e.g. "RSD", "EUR"
+}
+
+message GetCurrenciesResponse {
+  repeated Currency valute = 1;
+}
+
+// ─── Delatnosti ───────────────────────────────────────────────────────────────
+
+// Delatnost predstavlja šifarnik delatnosti (klasifikacija privrednih subjekata).
+message Delatnost {
+  int64  id     = 1;
+  string sifra  = 2; // šifra delatnosti, e.g. "6411"
+  string naziv  = 3;
+  string grana  = 4;
+  string sektor = 5;
+}
+
+message GetDelatnostiResponse {
+  repeated Delatnost delatnosti = 1;
+}
+
+// ─── CreateAccount ────────────────────────────────────────────────────────────
+
+// Firma se popunjava samo za poslovne račune; za fizička lica ostaje null.
+message Firma {
+  string naziv        = 1;
+  string maticni_broj = 2;
+  string pib          = 3;
+  int64  delatnost_id = 4;
+  string adresa       = 5;
+  int64  vlasnik_id   = 6;
+}
+
+message CreateAccountRequest {
+  int64           zaposleni_id      = 1; // ID zaposlenog koji kreira račun
+  int64           vlasnik_id        = 2; // ID vlasnika računa (klijent)
+  int64           valuta_id         = 3;
+  optional Firma  firma             = 4; // null za fizička lica
+  string          kategorija_racuna = 5;
+  string          vrsta_racuna      = 6;
+  string          podvrsta          = 7;
+  string          naziv             = 8;
+  double          stanje            = 9; // početno stanje računa
+  bool            kreiraj_karticu   = 10;
+}
+
+message CreateAccountResponse {
+  int64 id = 1; // ID novokreiranog računa
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+service BankaService {
+
+  // GetCurrencies — javna metoda, vraća sve podržane valute.
+  rpc GetCurrencies(google.protobuf.Empty) returns (GetCurrenciesResponse) {
+    option (google.api.http) = {
+      get: "/bank/currencies"
+    };
+  }
+
+  // GetDelatnosti — javna metoda, vraća šifarnik delatnosti.
+  rpc GetDelatnosti(google.protobuf.Empty) returns (GetDelatnostiResponse) {
+    option (google.api.http) = {
+      get: "/bank/delatnosti"
+    };
+  }
+
+  // CreateAccount — Employee only. Kreira novi bankovni račun.
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse) {
+    option (google.api.http) = {
+      post: "/bank/accounts"
+      body: "*"
+    };
+  }
+}

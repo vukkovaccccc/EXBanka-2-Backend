@@ -22,10 +22,10 @@ import (
 	"time"
 
 	pb "banka-backend/proto/user"
+	auth "banka-backend/shared/auth"
 	"banka-backend/services/user-service/internal/config"
 	dbsqlc "banka-backend/services/user-service/internal/database/sqlc"
 	userhandler "banka-backend/services/user-service/internal/handler"
-	"banka-backend/services/user-service/internal/interceptor"
 	"banka-backend/services/user-service/internal/transport"
 	"banka-backend/services/user-service/internal/utils"
 
@@ -72,7 +72,15 @@ func main() {
 	// AuthInterceptor is prepended so it runs before logging and can reject
 	// unauthenticated requests early. The secret is read from JWT_ACCESS_SECRET
 	// (falls back to "change-me-access-secret" in config.Load for local dev).
-	authInterceptor := interceptor.NewAuthInterceptor(cfg.JWTAccessSecret)
+	authInterceptor := auth.NewAuthInterceptor(cfg.JWTAccessSecret, []string{
+		pb.UserService_HealthCheck_FullMethodName,
+		pb.UserService_Login_FullMethodName,
+		pb.UserService_SetPassword_FullMethodName,     // activation token is the credential, no access token
+		pb.UserService_ActivateAccount_FullMethodName,
+		pb.UserService_RefreshToken_FullMethodName,    // carries a refresh token, not an access token
+		pb.UserService_ForgotPassword_FullMethodName,  // unauthenticated — only an email is provided
+		pb.UserService_ResetPassword_FullMethodName,   // reset token is the credential, no access token
+	})
 	grpcSrv := transport.NewGRPCServer(cfg.GRPCAddr, authInterceptor.Unary())
 
 	handler := userhandler.NewUserHandler(querier, sqlDB, cfg.JWTAccessSecret, cfg.JWTRefreshSecret, cfg.JWTActivationSecret, utils.NewAMQPPublisher(cfg.RabbitMQURL))

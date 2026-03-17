@@ -16,8 +16,8 @@ import (
 	"time"
 
 	pb "banka-backend/proto/user"
+	auth "banka-backend/shared/auth"
 	db "banka-backend/services/user-service/internal/database/sqlc"
-	"banka-backend/services/user-service/internal/interceptor"
 	"banka-backend/services/user-service/internal/utils"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -78,7 +78,7 @@ func (h *UserHandler) HealthCheck(_ context.Context, _ *pb.HealthCheckRequest) (
 // Mapped to: POST /employee
 func (h *UserHandler) CreateEmployee(ctx context.Context, req *pb.CreateEmployeeRequest) (*pb.CreateEmployeeResponse, error) {
 	// ── 1. Authorization — ADMIN only ─────────────────────────────────────────
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok || claims.UserType != "ADMIN" {
 		return nil, status.Errorf(codes.PermissionDenied, "only administrators can create employees")
 	}
@@ -191,7 +191,7 @@ func (h *UserHandler) CreateEmployee(ctx context.Context, req *pb.CreateEmployee
 	// The user is already committed; any messaging failure must NOT roll back
 	// the DB or return an error to the caller — the frontend would have no way
 	// to reconcile a committed row against a gRPC error response.
-	token, err := utils.GenerateActivationToken(req.Email, h.activationSecret)
+	token, err := auth.GenerateActivationToken(req.Email, h.activationSecret)
 	if err != nil {
 		log.Printf("[create-employee] failed to generate activation token for %s: %v", req.Email, err)
 	} else if err := h.publisher.Publish(utils.EmailEvent{
@@ -229,7 +229,7 @@ func (h *UserHandler) CreateEmployee(ctx context.Context, req *pb.CreateEmployee
 // Mapped to: PUT /employee/{id}
 func (h *UserHandler) UpdateEmployee(ctx context.Context, req *pb.UpdateEmployeeRequest) (*pb.UpdateEmployeeResponse, error) {
 	// ── 1. Authorization ──────────────────────────────────────────────────────
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Errorf(codes.PermissionDenied, "missing authentication claims")
 	}
@@ -373,7 +373,7 @@ func (h *UserHandler) UpdateEmployee(ctx context.Context, req *pb.UpdateEmployee
 //
 // Mapped to: PATCH /employee/{id}/active (after make proto).
 func (h *UserHandler) ToggleEmployeeActive(ctx context.Context, req *pb.ToggleEmployeeActiveRequest) (*pb.ToggleEmployeeActiveResponse, error) {
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Errorf(codes.PermissionDenied, "missing authentication claims")
 	}
@@ -438,7 +438,7 @@ func (h *UserHandler) SetPassword(ctx context.Context, req *pb.SetPasswordReques
 	}
 
 	// ── 2. Verify activation token ────────────────────────────────────────────
-	email, err := utils.VerifyActivationToken(req.Token, h.activationSecret)
+	email, err := auth.VerifyActivationToken(req.Token, h.activationSecret)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "invalid or expired activation token")
 	}
@@ -500,7 +500,7 @@ func (h *UserHandler) ActivateAccount(ctx context.Context, req *pb.ActivateAccou
 	}
 
 	// ── 2. Verify activation token ────────────────────────────────────────────
-	email, err := utils.VerifyActivationToken(req.Token, h.activationSecret)
+	email, err := auth.VerifyActivationToken(req.Token, h.activationSecret)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "invalid or expired activation token")
 	}
@@ -597,7 +597,7 @@ func (h *UserHandler) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Logi
 	// Access token:  { sub, email, user_type, permissions[], iat, exp }
 	// Refresh token: { sub, iat, exp, token_type: "refresh" }
 	userIDStr := strconv.FormatInt(user.ID, 10)
-	accessToken, refreshToken, err := utils.GenerateTokens(
+	accessToken, refreshToken, err := auth.GenerateTokens(
 		userIDStr,
 		user.Email,
 		user.UserType,
@@ -632,7 +632,7 @@ func (h *UserHandler) Login(ctx context.Context, req *pb.LoginRequest) (*pb.Logi
 // Mapped to: POST /refresh-token
 func (h *UserHandler) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequest) (*pb.RefreshTokenResponse, error) {
 	// ── 1. Verify refresh token ───────────────────────────────────────────────
-	refreshClaims, err := utils.VerifyRefreshToken(req.RefreshToken, h.refreshSecret)
+	refreshClaims, err := auth.VerifyRefreshToken(req.RefreshToken, h.refreshSecret)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "invalid refresh token: %v", err)
 	}
@@ -664,7 +664,7 @@ func (h *UserHandler) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequ
 
 	// ── 5. Issue new access token only ────────────────────────────────────────
 	userIDStr := strconv.FormatInt(user.ID, 10)
-	accessToken, err := utils.GenerateAccessToken(
+	accessToken, err := auth.GenerateAccessToken(
 		userIDStr,
 		user.Email,
 		user.UserType,
@@ -692,7 +692,7 @@ func (h *UserHandler) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequ
 // Mapped to: GET /permissions
 func (h *UserHandler) GetAllPermissions(ctx context.Context, _ *pb.GetAllPermissionsRequest) (*pb.GetAllPermissionsResponse, error) {
 	// ── 1. Authorization — ADMIN only ─────────────────────────────────────────
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok || claims.UserType != "ADMIN" {
 		return nil, status.Errorf(codes.PermissionDenied, "only administrators can list permissions")
 	}
@@ -732,7 +732,7 @@ func (h *UserHandler) GetAllPermissions(ctx context.Context, _ *pb.GetAllPermiss
 // Mapped to: GET /employee
 func (h *UserHandler) GetAllEmployees(ctx context.Context, req *pb.GetAllEmployeesRequest) (*pb.GetAllEmployeesResponse, error) {
 	// ── 1. Authorization — ADMIN only ─────────────────────────────────────────
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok || claims.UserType != "ADMIN" {
 		return nil, status.Errorf(codes.PermissionDenied, "only admins can list employees")
 	}
@@ -811,7 +811,7 @@ func (h *UserHandler) GetAllEmployees(ctx context.Context, req *pb.GetAllEmploye
 // Mapped to: GET /employee/{id}
 func (h *UserHandler) GetEmployeeByID(ctx context.Context, req *pb.GetEmployeeByIDRequest) (*pb.GetEmployeeByIDResponse, error) {
 	// ── 1. Authorization ──────────────────────────────────────────────────────
-	claims, ok := interceptor.ClaimsFromContext(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
 	if !ok {
 		return nil, status.Errorf(codes.PermissionDenied, "missing authentication claims")
 	}
@@ -869,6 +869,154 @@ func (h *UserHandler) GetEmployeeByID(ctx context.Context, req *pb.GetEmployeeBy
 			Department:  fromNullStr(row.Department),
 			Permissions: perms,
 		},
+	}, nil
+}
+
+// ─── Client management ────────────────────────────────────────────────────────
+
+// SearchClients returns a paginated list of client previews for Autocomplete
+// and Infinite Scroll on the account-creation form.
+//
+// Flow:
+//  1. EMPLOYEE-only guard via JWT claims.
+//  2. Normalise pagination defaults (page=1, limit=10 when zero).
+//  3. Map empty query to sql.NullString{Valid:false} so the SQL IS NULL branch
+//     fires and all clients are returned (no text filter applied).
+//  4. Fetch limit+1 rows — one extra to detect has_more without a COUNT query.
+//  5. Trim the slice back to limit and set has_more accordingly.
+//
+// Mapped to: GET /client/search
+func (h *UserHandler) SearchClients(ctx context.Context, req *pb.SearchClientsRequest) (*pb.SearchClientsResponse, error) {
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.UserType != "EMPLOYEE" {
+		return nil, status.Errorf(codes.PermissionDenied, "only employees can search clients")
+	}
+
+	// ── 2. Pagination defaults ────────────────────────────────────────────────
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	offset := (page - 1) * limit
+
+	// ── 3. Query mapping ──────────────────────────────────────────────────────
+	// An empty query string maps to sql.NullString{Valid:false} so the SQL
+	// IS NULL branch fires and all clients are returned (no filter applied).
+	params := db.SearchClientsParams{
+		Limit:  limit + 1, // fetch one extra to detect has_more
+		Offset: offset,
+	}
+	if req.Query != "" {
+		params.Query = sql.NullString{String: req.Query, Valid: true}
+	}
+
+	// ── 4. Query DB ───────────────────────────────────────────────────────────
+	rows, err := h.querier.SearchClients(ctx, params)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to search clients")
+	}
+
+	// ── 5. has_more detection & slice trimming ────────────────────────────────
+	hasMore := false
+	if int32(len(rows)) > limit {
+		hasMore = true
+		rows = rows[:limit]
+	}
+
+	// ── 6. Map & return ───────────────────────────────────────────────────────
+	previews := make([]*pb.ClientPreview, 0, len(rows))
+	for _, row := range rows {
+		previews = append(previews, &pb.ClientPreview{
+			Id:        row.ID,
+			FirstName: row.FirstName,
+			LastName:  row.LastName,
+			Email:     row.Email,
+		})
+	}
+
+	return &pb.SearchClientsResponse{
+		Clients: previews,
+		HasMore: hasMore,
+	}, nil
+}
+
+// CreateClient registers a new bank client account without a password.
+//
+// Flow:
+//  1. EMPLOYEE-only guard via JWT claims.
+//  2. Validate mandatory fields (email, first_name, last_name).
+//  3. INSERT into users with user_type = 'CLIENT'; leave password_hash empty.
+//  4. Return the new user ID + email.
+//  5. Publish activation event asynchronously (fire-and-forget).
+//
+// NOTE: client_details is not populated here; that is deferred to a later phase.
+// Mapped to: POST /client
+func (h *UserHandler) CreateClient(ctx context.Context, req *pb.CreateClientRequest) (*pb.CreateClientResponse, error) {
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.UserType != "EMPLOYEE" {
+		return nil, status.Errorf(codes.PermissionDenied, "only employees can register clients")
+	}
+
+	// ── 2. Mandatory field validation ─────────────────────────────────────────
+	switch {
+	case strings.TrimSpace(req.Email) == "":
+		return nil, status.Errorf(codes.InvalidArgument, "email is required")
+	case strings.TrimSpace(req.FirstName) == "":
+		return nil, status.Errorf(codes.InvalidArgument, "first_name is required")
+	case strings.TrimSpace(req.LastName) == "":
+		return nil, status.Errorf(codes.InvalidArgument, "last_name is required")
+	case req.BirthDate > 0 && req.BirthDate > time.Now().UnixMilli():
+		return nil, status.Errorf(codes.InvalidArgument, "birth date cannot be in the future")
+	case !isValidPhone(req.PhoneNumber):
+		return nil, status.Errorf(codes.InvalidArgument, "phone number may only contain digits and an optional leading +")
+	}
+
+	// ── 3. INSERT users ───────────────────────────────────────────────────────
+	// user_type is always CLIENT; password stays empty until the client
+	// activates their account via the activation link.
+	newUser, err := h.querier.CreateUser(ctx, db.CreateUserParams{
+		Email:        strings.TrimSpace(req.Email),
+		PasswordHash: "",
+		SaltPassword: "",
+		UserType:     "CLIENT",
+		FirstName:    strings.TrimSpace(req.FirstName),
+		LastName:     strings.TrimSpace(req.LastName),
+		BirthDate:    req.BirthDate,
+		Gender:       nullStrIf(genderToString(req.Gender), req.Gender != pb.Gender_GENDER_UNSPECIFIED),
+		PhoneNumber:  nullStrIf(req.PhoneNumber, req.PhoneNumber != ""),
+		Address:      nullStrIf(req.Address, req.Address != ""),
+		IsActive:     true,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, status.Errorf(codes.AlreadyExists, "email already registered: %s", req.Email)
+		}
+		return nil, status.Errorf(codes.Internal, "failed to create client")
+	}
+
+	// ── 4. Publish activation event ───────────────────────────────────────────
+	// Fire-and-forget: the user is already committed; a messaging failure must
+	// NOT return an error to the caller — the client row exists regardless.
+	token, err := auth.GenerateActivationToken(req.Email, h.activationSecret)
+	if err != nil {
+		log.Printf("[create-client] failed to generate activation token for %s: %v", req.Email, err)
+	} else if err := h.publisher.Publish(utils.EmailEvent{
+		Type:  "ACTIVATION",
+		Email: req.Email,
+		Token: token,
+	}); err != nil {
+		log.Printf("[create-client] failed to publish activation event for %s: %v", req.Email, err)
+	}
+
+	return &pb.CreateClientResponse{
+		Id:    newUser.ID,
+		Email: newUser.Email,
 	}, nil
 }
 
@@ -997,7 +1145,7 @@ func (h *UserHandler) ForgotPassword(ctx context.Context, req *pb.ForgotPassword
 	// Only generate a token for active accounts; inactive accounts are silently
 	// skipped (same safe reply — no information leaked).
 	if user.IsActive {
-		token, err := utils.GenerateResetToken(req.Email, h.activationSecret)
+		token, err := auth.GenerateResetToken(req.Email, h.activationSecret)
 		if err != nil {
 			log.Printf("[forgot-password] failed to generate reset token for %s: %v", req.Email, err)
 		} else if err := h.publisher.Publish(utils.EmailEvent{
@@ -1028,7 +1176,7 @@ func (h *UserHandler) ResetPassword(ctx context.Context, req *pb.ResetPasswordRe
 	}
 
 	// ── 2. Verify reset token ─────────────────────────────────────────────────
-	email, err := utils.VerifyResetToken(req.Token, h.activationSecret)
+	email, err := auth.VerifyResetToken(req.Token, h.activationSecret)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "invalid or expired reset token")
 	}

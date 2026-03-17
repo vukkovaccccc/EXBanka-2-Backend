@@ -1,5 +1,5 @@
-// Package utils — JWT generation and verification.
-package utils
+// Package auth — JWT generation and verification, shared across all microservices.
+package auth
 
 import (
 	"errors"

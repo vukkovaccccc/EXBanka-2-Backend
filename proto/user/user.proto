@@ -273,6 +273,48 @@ message ResetPasswordResponse {
   string message = 1; // "Password reset successfully."
 }
 
+// ─── SearchClients ────────────────────────────────────────────────────────────
+// Employee-only. Lightweight client preview for Autocomplete/Infinite Scroll
+// on the account-creation form.
+
+// ClientPreview is a minimal client projection returned by SearchClients.
+message ClientPreview {
+  int64  id         = 1;
+  string first_name = 2;
+  string last_name  = 3;
+  string email      = 4;
+}
+
+message SearchClientsRequest {
+  string query = 1; // partial match on first_name, last_name, or email; "" = return all
+  int32  page  = 2; // 1-indexed; 0 is treated as 1
+  int32  limit = 3; // page size; 0 is treated as 10
+}
+
+message SearchClientsResponse {
+  repeated ClientPreview clients  = 1;
+  bool                   has_more = 2;
+}
+
+// ─── CreateClient ─────────────────────────────────────────────────────────────
+// Employee-only. Creates a new CLIENT account without a password.
+// The Notification service sends an activation email asynchronously.
+
+message CreateClientRequest {
+  string email        = 1;
+  string first_name   = 2;
+  string last_name    = 3;
+  int64  birth_date   = 4; // Unix timestamp (ms)
+  Gender gender       = 5;
+  string phone_number = 6;
+  string address      = 7;
+}
+
+message CreateClientResponse {
+  int64  id    = 1; // new user id
+  string email = 2; // echoed back for confirmation
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 service UserService {
@@ -387,6 +429,26 @@ service UserService {
   rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse) {
     option (google.api.http) = {
       post: "/auth/reset-password"
+      body: "*"
+    };
+  }
+
+  // SearchClients — Employee only.
+  // Searches clients by first/last name or email for Autocomplete and
+  // Infinite Scroll on the account-creation form.
+  // Empty query returns all clients (paginated).
+  rpc SearchClients(SearchClientsRequest) returns (SearchClientsResponse) {
+    option (google.api.http) = {
+      get: "/client/search"
+    };
+  }
+
+  // CreateClient — Employee only.
+  // Creates a new physical client account (no password). An activation email
+  // is sent asynchronously via the Notification service.
+  rpc CreateClient(CreateClientRequest) returns (CreateClientResponse) {
+    option (google.api.http) = {
+      post: "/client"
       body: "*"
     };
   }
