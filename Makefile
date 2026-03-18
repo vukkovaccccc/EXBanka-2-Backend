@@ -1,4 +1,4 @@
-.PHONY: proto tidy build-user build-notif build-all docker-up docker-down \
+.PHONY: proto tidy build-user build-notif build-bank build-all docker-up docker-down \
         test test-coverage test-coverage-filtered generate-mocks
 
 # ─── Proto generation ────────────────────────────────────────────────────────
@@ -49,7 +49,10 @@ build-user:
 build-notif:
 	CGO_ENABLED=0 go build -o bin/notification-service ./services/notification-service/cmd/server
 
-build-all: build-user build-notif
+build-bank:
+	CGO_ENABLED=0 go build -o bin/bank-service ./services/bank-service/cmd/server
+
+build-all: build-user build-notif build-bank
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
 docker-up:
@@ -63,3 +66,6 @@ logs-user:
 
 logs-notif:
 	docker compose logs -f notification-service
+
+logs-bank:
+	docker compose logs -f bank-service

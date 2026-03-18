@@ -1208,3 +1208,30 @@ func (h *UserHandler) ResetPassword(ctx context.Context, req *pb.ResetPasswordRe
 
 	return &pb.ResetPasswordResponse{Message: "Password reset successfully."}, nil
 }
+
+// GetMyProfile vraća profil trenutno prijavljenog korisnika.
+//
+// Mapped to: GET /user/me
+func (h *UserHandler) GetMyProfile(ctx context.Context, _ *pb.GetMyProfileRequest) (*pb.GetMyProfileResponse, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "neautorizovan pristup")
+	}
+
+	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "neispravan korisnički ID u tokenu")
+	}
+
+	user, err := h.querier.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "korisnik nije pronađen")
+	}
+
+	return &pb.GetMyProfileResponse{
+		Id:        user.ID,
+		Email:     user.Email,
+		FirstName: user.FirstName,
+		LastName:  user.LastName,
+	}, nil
+}

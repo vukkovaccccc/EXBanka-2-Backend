@@ -3,6 +3,7 @@
 package service
 
 import (
+	auth "banka-backend/shared/auth"
 	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/utils"
 )
@@ -58,9 +59,7 @@ func (s *userService) Login(email, password string) (string, string, error) {
 		return "", "", domain.ErrInvalidCredentials
 	}
 
-	// TODO(Phase 5): pass real email, user_type, and permissions once the DB
-	// query returns the full user profile.
-	access, refresh, err := utils.GenerateTokens(
+	access, refresh, err := auth.GenerateTokens(
 		user.ID, user.Email, "", nil,
 		s.accessSecret, s.refreshSecret,
 	)
