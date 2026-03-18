@@ -49,6 +49,21 @@ services:
     networks:
       - bank-net
 
+  migrate-bank:
+    image: migrate/migrate
+    container_name: bank_migrate_bank
+    volumes:
+      - ./services/bank-service/internal/database/migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://bank_admin:super_secret_password@db:5432/bank_db?sslmode=disable"
+      - "up"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - bank-net
+
   user-service:
     build:
       context: .
@@ -73,6 +88,34 @@ services:
       rabbitmq:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+    networks:
+      - bank-net
+
+  bank-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/bank-service/cmd/server
+    container_name: bank_bank_service
+    restart: on-failure
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=bank_admin
+      - DB_PASSWORD=super_secret_password
+      - DB_NAME=bank_db
+      - HTTP_ADDR=0.0.0.0:8080
+      - GRPC_ADDR=0.0.0.0:50051
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-change-me-access-secret}
+    ports:
+      - "8083:8080"   # host 8083 → container 8080
+      - "50053:50051" # host 50053 → container 50051
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate-bank:
         condition: service_completed_successfully
     networks:
       - bank-net

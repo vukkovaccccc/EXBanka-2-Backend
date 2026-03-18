@@ -134,6 +134,11 @@ func (m *MockQuerier) UpdateUserPassword(ctx context.Context, arg sqlc.UpdateUse
 	return args.Error(0)
 }
 
+func (m *MockQuerier) SearchClients(ctx context.Context, arg sqlc.SearchClientsParams) ([]sqlc.SearchClientsRow, error) {
+	args := m.Called(ctx, arg)
+	return args.Get(0).([]sqlc.SearchClientsRow), args.Error(1)
+}
+
 // Ensure MockQuerier implements sqlc.Querier at compile time.
 var _ sqlc.Querier = (*MockQuerier)(nil)
 

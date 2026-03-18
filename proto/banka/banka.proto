@@ -64,6 +64,239 @@ message CreateAccountResponse {
   int64 id = 1; // ID novokreiranog računa
 }
 
+// ─── GetClientAccounts ────────────────────────────────────────────────────────
+
+// AccountListItem je minimalna projekcija računa za listu.
+message AccountListItem {
+  int64  id                   = 1;
+  string broj_racuna          = 2;
+  string naziv_racuna         = 3;
+  string vrsta_racuna         = 4;  // "LICNI" | "POSLOVNI"
+  string kategorija_racuna    = 5;  // "TEKUCI" | "DEVIZNI"
+  string valuta_oznaka        = 6;
+  double stanje_racuna        = 7;
+  double rezervisana_sredstva = 8;
+  double raspolozivo_stanje   = 9;
+}
+
+message GetClientAccountsResponse {
+  repeated AccountListItem accounts = 1;
+}
+
+// ─── GetAccountDetail ─────────────────────────────────────────────────────────
+
+message GetAccountDetailRequest {
+  int64 id = 1;
+}
+
+// AccountDetail je detaljna projekcija računa.
+message AccountDetail {
+  int64  id                   = 1;
+  string broj_racuna          = 2;
+  string naziv_racuna         = 3;
+  string vrsta_racuna         = 4;
+  string kategorija_racuna    = 5;
+  string valuta_oznaka        = 6;
+  double stanje_racuna        = 7;
+  double rezervisana_sredstva = 8;
+  double raspolozivo_stanje   = 9;
+  double dnevni_limit         = 10;
+  double mesecni_limit        = 11;
+  optional string naziv_firme = 12; // samo za POSLOVNI račun
+}
+
+// ─── GetAccountTransactions ───────────────────────────────────────────────────
+
+message GetAccountTransactionsRequest {
+  int64  racun_id   = 1;
+  string sort_by    = 2; // "datum" | "tip"
+  string sort_order = 3; // "ASC" | "DESC"
+}
+
+// Transakcija je projekcija jednog zapisa o transakciji.
+message Transakcija {
+  int64  id                = 1;
+  int64  racun_id          = 2;
+  string tip_transakcije   = 3;
+  double iznos             = 4;
+  string opis              = 5;
+  string vreme_izvrsavanja = 6; // ISO 8601 string
+  string status            = 7;
+}
+
+message GetAccountTransactionsResponse {
+  repeated Transakcija transactions = 1;
+}
+
+// ─── RenameAccount ────────────────────────────────────────────────────────────
+
+message RenameAccountRequest {
+  int64  id         = 1;
+  string novi_naziv = 2;
+}
+
+// ─── UpdateAccountLimit ───────────────────────────────────────────────────────
+// Kreira pending action za promenu limita — mora se odobriti putem mobilne app.
+
+message UpdateAccountLimitRequest {
+  int64  id            = 1;
+  double dnevni_limit  = 2;
+  double mesecni_limit = 3;
+}
+
+message UpdateAccountLimitResponse {
+  int64  action_id = 1; // ID pending akcije za verifikaciju
+  string status    = 2; // "AWAITING_VERIFICATION"
+}
+
+// ─── Pending Actions (Verifikacija) ──────────────────────────────────────────
+
+// PendingActionItem — projekcija za mobilni prikaz.
+// Polja su nazvana tako da odgovaraju postojećim DTO-ovima u mobilnoj aplikaciji.
+message PendingActionItem {
+  int64  id               = 1;
+  string action_type      = 2;  // "PROMENA_LIMITA"
+  string recipient_name   = 3;  // naziv akcije, npr. "Promena limita"
+  string recipient_account= 4;  // broj racuna
+  double amount           = 5;  // dnevni limit
+  string currency         = 6;  // valuta računa
+  string purpose          = 7;  // "Dnevni: X / Mesečni: Y"
+  string created_at       = 8;  // ISO 8601
+  string status           = 9;  // "PENDING"
+}
+
+message GetPendingActionsResponse {
+  repeated PendingActionItem transactions = 1;
+}
+
+message GetPendingActionRequest {
+  int64 id = 1;
+}
+
+message GetPendingActionResponse {
+  PendingActionItem transaction = 1;
+}
+
+message ApprovePendingActionRequest {
+  int64 id = 1;
+}
+
+message ApprovePendingActionResponse {
+  string verification_code  = 1;
+  string expires_at         = 2;
+  int32  expires_in_seconds = 3;
+}
+
+message VerifyLimitChangeRequest {
+  int64  id   = 1;  // pending_action.id (in path)
+  string code = 2;  // 6-cifreni kod
+}
+
+// ─── Payment Recipient ────────────────────────────────────────────────────────
+
+message PaymentRecipientItem {
+  int64  id          = 1;
+  string naziv       = 2;
+  string broj_racuna = 3;
+}
+
+message GetPaymentRecipientsResponse {
+  repeated PaymentRecipientItem recipients = 1;
+}
+
+message CreatePaymentRecipientRequest {
+  string naziv       = 1;
+  string broj_racuna = 2;
+}
+
+message UpdatePaymentRecipientRequest {
+  int64  id          = 1;
+  string naziv       = 2;
+  string broj_racuna = 3;
+}
+
+message DeletePaymentRecipientRequest {
+  int64 id = 1;
+}
+
+// ─── Payment Intent ───────────────────────────────────────────────────────────
+
+// CreatePaymentIntentRequest — kreiranje naloga plaćanja između klijenata.
+message CreatePaymentIntentRequest {
+  string idempotency_key      = 1;  // UUID koji generiše frontend
+  int64  racun_platioca_id    = 2;
+  string broj_racuna_primaoca = 3;
+  string naziv_primaoca       = 4;
+  double iznos                = 5;
+  string sifra_placanja       = 6;  // 3 cifre, počinje sa 2
+  string poziv_na_broj        = 7;  // opciono
+  string svrha_placanja       = 8;
+}
+
+// CreateTransferIntentRequest — kreiranje prenosa između računa istog klijenta.
+message CreateTransferIntentRequest {
+  string idempotency_key   = 1;
+  int64  racun_platioca_id = 2;
+  int64  racun_primaoca_id = 3;
+  double iznos             = 4;
+  string svrha_placanja    = 5;
+}
+
+// CreatePaymentIntentResponse — odgovor pri kreiranju naloga.
+message CreatePaymentIntentResponse {
+  int64  intent_id       = 1;  // ID payment_intent-a
+  int64  action_id       = 2;  // ID pending_action-a za mobilnu verifikaciju
+  string broj_naloga     = 3;
+  string status          = 4;  // "U_OBRADI"
+  string valuta          = 5;
+  double iznos           = 6;
+}
+
+// VerifyPaymentRequest — verifikacija koda i izvršenje naloga.
+message VerifyPaymentRequest {
+  int64  intent_id = 1;
+  string code      = 2;
+}
+
+// PaymentIntentItem — detalji jednog naloga plaćanja.
+message PaymentIntentItem {
+  int64  id                   = 1;
+  string idempotency_key      = 2;
+  string broj_naloga          = 3;
+  string tip_transakcije      = 4;  // "PLACANJE" | "PRENOS"
+  string broj_racuna_platioca = 5;
+  string broj_racuna_primaoca = 6;
+  string naziv_primaoca       = 7;
+  double iznos                = 8;
+  double krajnji_iznos        = 9;
+  double provizija            = 10;
+  string valuta               = 11;
+  string sifra_placanja       = 12;
+  string poziv_na_broj        = 13;
+  string svrha_placanja       = 14;
+  string status               = 15;  // "U_OBRADI" | "REALIZOVANO" | "ODBIJENO"
+  string created_at           = 16;  // ISO 8601
+  string executed_at          = 17;  // ISO 8601, prazan ako nije izvršen
+  string failed_reason        = 18;
+  int64  intent_id            = 19;  // alias za id, za frontend kompatibilnost
+}
+
+message GetPaymentHistoryRequest {
+  string date_from   = 1;  // ISO 8601, opciono
+  string date_to     = 2;  // ISO 8601, opciono
+  double min_iznos   = 3;  // 0 = bez filtera
+  double max_iznos   = 4;  // 0 = bez filtera
+  string status      = 5;  // "" = sve
+}
+
+message GetPaymentHistoryResponse {
+  repeated PaymentIntentItem payments = 1;
+}
+
+message GetPaymentDetailRequest {
+  int64 id = 1;
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 service BankaService {
@@ -87,6 +320,149 @@ service BankaService {
     option (google.api.http) = {
       post: "/bank/accounts"
       body: "*"
+    };
+  }
+
+  // GetClientAccounts — Client only. Vraća aktivne račune trenutno prijavljenog klijenta.
+  rpc GetClientAccounts(google.protobuf.Empty) returns (GetClientAccountsResponse) {
+    option (google.api.http) = {
+      get: "/bank/client/accounts"
+    };
+  }
+
+  // GetAccountDetail — Client only. Vraća detalje jednog računa.
+  rpc GetAccountDetail(GetAccountDetailRequest) returns (AccountDetail) {
+    option (google.api.http) = {
+      get: "/bank/client/accounts/{id}"
+    };
+  }
+
+  // GetAccountTransactions — Client only. Vraća transakcije za dati račun.
+  rpc GetAccountTransactions(GetAccountTransactionsRequest) returns (GetAccountTransactionsResponse) {
+    option (google.api.http) = {
+      get: "/bank/client/accounts/{racun_id}/transactions"
+    };
+  }
+
+  // RenameAccount — Client only. Menja naziv računa.
+  rpc RenameAccount(RenameAccountRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      patch: "/bank/client/accounts/{id}/name"
+      body: "*"
+    };
+  }
+
+  // UpdateAccountLimit — Client only. Kreira pending action za promenu limita.
+  rpc UpdateAccountLimit(UpdateAccountLimitRequest) returns (UpdateAccountLimitResponse) {
+    option (google.api.http) = {
+      patch: "/bank/client/accounts/{id}/limit"
+      body: "*"
+    };
+  }
+
+  // GetPendingAction — Client only. Vraća jednu pending akciju.
+  rpc GetPendingAction(GetPendingActionRequest) returns (GetPendingActionResponse) {
+    option (google.api.http) = {
+      get: "/bank/transactions/{id}"
+    };
+  }
+
+  // GetPendingActions — Client only. Vraća pending akcije za mobilni.
+  // MORA biti registrovana POSLE GetPendingAction jer grpc-gateway v2 prepend-uje handlere
+  // (poslje registrovani imaju prioritet). Statička ruta /pending mora pobediti {id}.
+  rpc GetPendingActions(google.protobuf.Empty) returns (GetPendingActionsResponse) {
+    option (google.api.http) = {
+      get: "/bank/transactions/pending"
+    };
+  }
+
+  // ApprovePendingAction — Client only. Odobrava akciju i generiše verifikacioni kod.
+  rpc ApprovePendingAction(ApprovePendingActionRequest) returns (ApprovePendingActionResponse) {
+    option (google.api.http) = {
+      post: "/bank/transactions/{id}/approve"
+      body: "*"
+    };
+  }
+
+  // VerifyLimitChange — Client only. Proverava kod i primenjuje promenu limita.
+  rpc VerifyLimitChange(VerifyLimitChangeRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/bank/client/pending-actions/{id}/verify"
+      body: "*"
+    };
+  }
+
+  // ── Primaoci plaćanja ─────────────────────────────────────────────────────
+
+  // GetPaymentRecipients — Client only. Lista sačuvanih primalaca.
+  rpc GetPaymentRecipients(google.protobuf.Empty) returns (GetPaymentRecipientsResponse) {
+    option (google.api.http) = {
+      get: "/bank/client/payment-recipients"
+    };
+  }
+
+  // CreatePaymentRecipient — Client only. Dodaje novog primaoca.
+  rpc CreatePaymentRecipient(CreatePaymentRecipientRequest) returns (PaymentRecipientItem) {
+    option (google.api.http) = {
+      post: "/bank/client/payment-recipients"
+      body: "*"
+    };
+  }
+
+  // UpdatePaymentRecipient — Client only. Menja primaoca.
+  rpc UpdatePaymentRecipient(UpdatePaymentRecipientRequest) returns (PaymentRecipientItem) {
+    option (google.api.http) = {
+      patch: "/bank/client/payment-recipients/{id}"
+      body: "*"
+    };
+  }
+
+  // DeletePaymentRecipient — Client only. Briše primaoca.
+  rpc DeletePaymentRecipient(DeletePaymentRecipientRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/bank/client/payment-recipients/{id}"
+    };
+  }
+
+  // ── Plaćanja i prenosi ────────────────────────────────────────────────────
+
+  // CreatePaymentIntent — Client only. Kreira nalog plaćanja i pokreće verifikaciju.
+  rpc CreatePaymentIntent(CreatePaymentIntentRequest) returns (CreatePaymentIntentResponse) {
+    option (google.api.http) = {
+      post: "/bank/client/payments"
+      body: "*"
+    };
+  }
+
+  // CreateTransferIntent — Client only. Kreira nalog prenosa između računa istog klijenta.
+  rpc CreateTransferIntent(CreateTransferIntentRequest) returns (CreatePaymentIntentResponse) {
+    option (google.api.http) = {
+      post: "/bank/client/transfers"
+      body: "*"
+    };
+  }
+
+  // VerifyAndExecutePayment — Client only. Proverava verifikacioni kod i izvršava plaćanje.
+  rpc VerifyAndExecutePayment(VerifyPaymentRequest) returns (PaymentIntentItem) {
+    option (google.api.http) = {
+      post: "/bank/client/payments/{intent_id}/verify"
+      body: "*"
+    };
+  }
+
+  // ── Istorija plaćanja ─────────────────────────────────────────────────────
+
+  // GetPaymentHistory — Client only. Istorija plaćanja sa filterima.
+  rpc GetPaymentHistory(GetPaymentHistoryRequest) returns (GetPaymentHistoryResponse) {
+    option (google.api.http) = {
+      get: "/bank/client/payments"
+    };
+  }
+
+  // GetPaymentDetail — Client only. Detalji jednog naloga.
+  rpc GetPaymentDetail(GetPaymentDetailRequest) returns (PaymentIntentItem) {
+    option (google.api.http) = {
+      get: "/bank/client/payments/{id}"
     };
   }
 }
