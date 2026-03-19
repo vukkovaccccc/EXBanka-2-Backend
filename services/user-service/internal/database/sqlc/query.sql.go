@@ -593,6 +593,78 @@ func (q *Queries) SearchClients(ctx context.Context, arg SearchClientsParams) ([
 	return items, nil
 }
 
+const listClients = `-- name: ListClients :many
+SELECT
+    u.id,
+    u.first_name,
+    u.last_name,
+    u.email,
+    u.phone_number
+FROM users u
+WHERE u.user_type = 'CLIENT'
+  AND (
+    $3::text IS NULL
+    OR u.first_name ILIKE '%' || $3::text || '%'
+    OR u.last_name  ILIKE '%' || $3::text || '%'
+    OR (u.first_name || ' ' || u.last_name) ILIKE '%' || $3::text || '%'
+  )
+  AND ($4::text IS NULL OR u.email ILIKE '%' || $4::text || '%')
+ORDER BY u.last_name ASC, u.first_name ASC
+LIMIT $1 OFFSET $2
+`
+
+type ListClientsParams struct {
+	Limit  int32          `json:"limit"`
+	Offset int32          `json:"offset"`
+	Name   sql.NullString `json:"name"`  // partial match on first_name, last_name, or "first last"
+	Email  sql.NullString `json:"email"` // partial match on email
+}
+
+type ListClientsRow struct {
+	ID          int64          `json:"id"`
+	FirstName   string         `json:"first_name"`
+	LastName    string         `json:"last_name"`
+	Email       string         `json:"email"`
+	PhoneNumber sql.NullString `json:"phone_number"`
+}
+
+// ListClients returns clients matching optional name/email filters, sorted
+// alphabetically by last name.  Pass NULL for either filter to skip it.
+// Request limit+1 rows from the caller to support has_more detection.
+func (q *Queries) ListClients(ctx context.Context, arg ListClientsParams) ([]ListClientsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listClients,
+		arg.Limit,
+		arg.Offset,
+		arg.Name,
+		arg.Email,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListClientsRow{}
+	for rows.Next() {
+		var i ListClientsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FirstName,
+			&i.LastName,
+			&i.Email,
+			&i.PhoneNumber,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markVerificationTokenUsed = `-- name: MarkVerificationTokenUsed :exec
 UPDATE verification_tokens
 SET used_at = NOW()

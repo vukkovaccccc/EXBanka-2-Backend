@@ -273,6 +273,32 @@ message ResetPasswordResponse {
   string message = 1; // "Password reset successfully."
 }
 
+// ─── ListClients ──────────────────────────────────────────────────────────────
+// Employee-only. Full client list for the management portal with optional
+// filtering by name and/or email and offset-based pagination.
+
+// ClientListItem is the per-row projection returned by the ListClients endpoint.
+// Includes phone_number (unlike the lighter ClientPreview used for autocomplete).
+message ClientListItem {
+  int64  id           = 1;
+  string first_name   = 2;
+  string last_name    = 3;
+  string email        = 4;
+  string phone_number = 5;
+}
+
+message ListClientsRequest {
+  string name   = 1; // partial match on first_name, last_name, or "first last"; "" = no filter
+  string email  = 2; // partial match on email; "" = no filter
+  int32  limit  = 3; // page size; 0 treated as 20
+  int32  offset = 4; // skip N results; 0 = from start
+}
+
+message ListClientsResponse {
+  repeated ClientListItem clients  = 1;
+  bool                    has_more = 2; // true when more rows exist beyond this page
+}
+
 // ─── SearchClients ────────────────────────────────────────────────────────────
 // Employee-only. Lightweight client preview for Autocomplete/Infinite Scroll
 // on the account-creation form.
@@ -307,6 +333,49 @@ message GetMyProfileResponse {
   string email      = 2;
   string first_name = 3;
   string last_name  = 4;
+}
+
+// ─── GetClientByID ────────────────────────────────────────────────────────────
+// Employee-only. Returns the full profile of a single client for the employee portal.
+// Returns NOT_FOUND when the ID does not exist or the user_type is not CLIENT.
+
+// ClientDetail is the full client profile returned by the employee portal.
+// Returned on the GetClientByID endpoint — no secrets exposed.
+message ClientDetail {
+  int64  id           = 1;
+  string first_name   = 2;
+  string last_name    = 3;
+  string email        = 4;
+  string phone_number = 5;
+  string address      = 6;
+  int64  date_of_birth = 7; // Unix timestamp (ms) — matches DB BIGINT birth_date
+  Gender gender       = 8;
+}
+
+message GetClientByIDRequest {
+  int64 id = 1; // required — must be non-zero
+}
+
+message GetClientByIDResponse {
+  ClientDetail client = 1; // full client profile
+}
+
+// ─── UpdateClient ─────────────────────────────────────────────────────────────
+// Employee-only. Partially updates the mutable fields of an existing client.
+// Empty string fields are ignored (keep the existing value).
+// JMBG and password are never updated through this endpoint.
+
+message UpdateClientRequest {
+  int64  id           = 1; // required — must be non-zero
+  string first_name   = 2; // optional — "" = keep existing
+  string last_name    = 3; // optional — "" = keep existing
+  string email        = 4; // optional — "" = keep existing; must be unique when provided
+  string phone_number = 5; // optional — "" = keep existing
+  string address      = 6; // optional — "" = keep existing
+}
+
+message UpdateClientResponse {
+  ClientDetail client = 1; // updated client profile
 }
 
 // ─── CreateClient ─────────────────────────────────────────────────────────────
@@ -443,6 +512,35 @@ service UserService {
     option (google.api.http) = {
       post: "/auth/reset-password"
       body: "*"
+    };
+  }
+
+  // GetClientByID — Employee only.
+  // Returns the full profile of a single client for the employee portal.
+  // Returns NOT_FOUND when the ID is unknown or the user is not a CLIENT.
+  rpc GetClientByID(GetClientByIDRequest) returns (GetClientByIDResponse) {
+    option (google.api.http) = {
+      get: "/client/{id}"
+    };
+  }
+
+  // UpdateClient — Employee only.
+  // Partially updates the mutable fields of an existing client.
+  // Returns NOT_FOUND if the client does not exist.
+  // Returns ALREADY_EXISTS if the email is already in use by another account.
+  rpc UpdateClient(UpdateClientRequest) returns (UpdateClientResponse) {
+    option (google.api.http) = {
+      patch: "/client/{id}"
+      body: "*"
+    };
+  }
+
+  // ListClients — Employee only.
+  // Returns a paginated, alphabetically-sorted list of clients for the
+  // management portal.  Supports optional name and email filters.
+  rpc ListClients(ListClientsRequest) returns (ListClientsResponse) {
+    option (google.api.http) = {
+      get: "/client"
     };
   }
 

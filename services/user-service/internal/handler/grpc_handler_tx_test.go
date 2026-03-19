@@ -32,6 +32,7 @@ func newTxHandler(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher, db *sql.D
 		testutil.TestRefreshSecret,
 		testutil.TestActivationSecret,
 		pub,
+		nil, // clientSvc — not exercised by transaction tests
 	)
 }
 

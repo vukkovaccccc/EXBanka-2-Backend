@@ -26,6 +26,7 @@ import (
 	"banka-backend/services/user-service/internal/config"
 	dbsqlc "banka-backend/services/user-service/internal/database/sqlc"
 	userhandler "banka-backend/services/user-service/internal/handler"
+	userservice "banka-backend/services/user-service/internal/service"
 	"banka-backend/services/user-service/internal/transport"
 	"banka-backend/services/user-service/internal/utils"
 
@@ -83,7 +84,7 @@ func main() {
 	})
 	grpcSrv := transport.NewGRPCServer(cfg.GRPCAddr, authInterceptor.Unary())
 
-	handler := userhandler.NewUserHandler(querier, sqlDB, cfg.JWTAccessSecret, cfg.JWTRefreshSecret, cfg.JWTActivationSecret, utils.NewAMQPPublisher(cfg.RabbitMQURL))
+	handler := userhandler.NewUserHandler(querier, sqlDB, cfg.JWTAccessSecret, cfg.JWTRefreshSecret, cfg.JWTActivationSecret, utils.NewAMQPPublisher(cfg.RabbitMQURL), userservice.NewClientService(querier))
 	pb.RegisterUserServiceServer(grpcSrv.Server(), handler)
 
 	// ── 4. gRPC-Gateway: dial the local gRPC server ──────────────────────────

@@ -18,6 +18,7 @@ import (
 	pb "banka-backend/proto/user"
 	auth "banka-backend/shared/auth"
 	db "banka-backend/services/user-service/internal/database/sqlc"
+	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/utils"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -38,12 +39,14 @@ type UserHandler struct {
 	refreshSecret    string               // HMAC secret for signing refresh tokens
 	activationSecret string               // HMAC secret for signing activation/reset tokens
 	publisher        utils.EmailPublisher // abstracts RabbitMQ publishing for testability
+	clientSvc        domain.ClientService // use-case layer for client operations
 }
 
 // NewUserHandler constructs a UserHandler.
 // sqlDB is required for handlers that need multi-statement transactions.
 // publisher handles async email event dispatch; inject utils.NewAMQPPublisher in production.
-func NewUserHandler(q db.Querier, sqlDB *sql.DB, accessSecret, refreshSecret, activationSecret string, publisher utils.EmailPublisher) *UserHandler {
+// clientSvc handles client use-case logic; inject service.NewClientService in production.
+func NewUserHandler(q db.Querier, sqlDB *sql.DB, accessSecret, refreshSecret, activationSecret string, publisher utils.EmailPublisher, clientSvc domain.ClientService) *UserHandler {
 	return &UserHandler{
 		querier:          q,
 		sqlDB:            sqlDB,
@@ -51,6 +54,7 @@ func NewUserHandler(q db.Querier, sqlDB *sql.DB, accessSecret, refreshSecret, ac
 		refreshSecret:    refreshSecret,
 		activationSecret: activationSecret,
 		publisher:        publisher,
+		clientSvc:        clientSvc,
 	}
 }
 
@@ -1017,6 +1021,161 @@ func (h *UserHandler) CreateClient(ctx context.Context, req *pb.CreateClientRequ
 	return &pb.CreateClientResponse{
 		Id:    newUser.ID,
 		Email: newUser.Email,
+	}, nil
+}
+
+// GetClientByID returns the full profile of a single client for the employee portal.
+//
+// Authorization: EMPLOYEE only — this is a staff-facing endpoint.
+//
+// Flow:
+//  1. EMPLOYEE-only guard via JWT claims.
+//  2. Validate id is non-zero — InvalidArgument otherwise.
+//  3. Delegate to clientSvc.GetClientByID — returns ErrClientNotFound when the ID
+//     is unknown or the user_type is not CLIENT.
+//  4. Map the domain entity to the proto response and return.
+//
+// Mapped to: GET /client/{id}
+func (h *UserHandler) GetClientByID(ctx context.Context, req *pb.GetClientByIDRequest) (*pb.GetClientByIDResponse, error) {
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.UserType != "EMPLOYEE" {
+		return nil, status.Errorf(codes.PermissionDenied, "only employees can view client details")
+	}
+
+	// ── 2. Input validation ───────────────────────────────────────────────────
+	if req.Id == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+	}
+
+	// ── 3. Delegate to service ────────────────────────────────────────────────
+	client, err := h.clientSvc.GetClientByID(ctx, req.Id)
+	if err != nil {
+		if errors.Is(err, domain.ErrClientNotFound) {
+			return nil, status.Errorf(codes.NotFound, "client %d not found", req.Id)
+		}
+		return nil, status.Errorf(codes.Internal, "failed to fetch client")
+	}
+
+	// ── 4. Map and return ─────────────────────────────────────────────────────
+	return &pb.GetClientByIDResponse{
+		Client: &pb.ClientDetail{
+			Id:          client.ID,
+			FirstName:   client.FirstName,
+			LastName:    client.LastName,
+			Email:       client.Email,
+			PhoneNumber: client.PhoneNumber,
+			Address:     client.Address,
+			DateOfBirth: client.DateOfBirth,
+			Gender:      genderFromString(sql.NullString{String: client.Gender, Valid: client.Gender != ""}),
+		},
+	}, nil
+}
+
+// ListClients returns a paginated, alphabetically-sorted list of clients for
+// the employee management portal.
+//
+// Flow:
+//  1. EMPLOYEE-only guard via JWT claims.
+//  2. Map empty filter strings to the "no filter" sentinel (empty string).
+//  3. Delegate to clientSvc.ListClients — handles pagination defaults and
+//     the has_more detection via limit+1 fetch.
+//  4. Map domain summaries to proto ClientListItem.
+//
+// Mapped to: GET /client
+func (h *UserHandler) ListClients(ctx context.Context, req *pb.ListClientsRequest) (*pb.ListClientsResponse, error) {
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.UserType != "EMPLOYEE" {
+		return nil, status.Errorf(codes.PermissionDenied, "only employees can list clients")
+	}
+
+	// ── 2. Delegate to service (applies pagination defaults internally) ────────
+	summaries, hasMore, err := h.clientSvc.ListClients(ctx, domain.ClientFilter{
+		Name:   req.Name,
+		Email:  req.Email,
+		Limit:  req.Limit,
+		Offset: req.Offset,
+	})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list clients")
+	}
+
+	// ── 3. Map to proto ───────────────────────────────────────────────────────
+	items := make([]*pb.ClientListItem, 0, len(summaries))
+	for _, s := range summaries {
+		items = append(items, &pb.ClientListItem{
+			Id:          s.ID,
+			FirstName:   s.FirstName,
+			LastName:    s.LastName,
+			Email:       s.Email,
+			PhoneNumber: s.PhoneNumber,
+		})
+	}
+
+	return &pb.ListClientsResponse{
+		Clients: items,
+		HasMore: hasMore,
+	}, nil
+}
+
+// UpdateClient partially updates the mutable fields of an existing client.
+//
+// Flow:
+//  1. EMPLOYEE-only guard via JWT claims.
+//  2. Validate id is non-zero.
+//  3. Validate phone_number format when provided.
+//  4. Delegate to clientSvc.UpdateClient with PATCH-style semantics
+//     (empty string = keep existing value).
+//  5. Map the updated domain entity to the proto response.
+//
+// Mapped to: PATCH /client/{id}
+func (h *UserHandler) UpdateClient(ctx context.Context, req *pb.UpdateClientRequest) (*pb.UpdateClientResponse, error) {
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok || claims.UserType != "EMPLOYEE" {
+		return nil, status.Errorf(codes.PermissionDenied, "only employees can update client details")
+	}
+
+	// ── 2. Input validation ───────────────────────────────────────────────────
+	if req.Id == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "id is required")
+	}
+	if req.PhoneNumber != "" && !isValidPhone(req.PhoneNumber) {
+		return nil, status.Errorf(codes.InvalidArgument, "phone_number must contain only digits and an optional leading +")
+	}
+
+	// ── 3. Delegate to service ────────────────────────────────────────────────
+	updated, err := h.clientSvc.UpdateClient(ctx, req.Id, domain.UpdateClientInput{
+		FirstName:   req.FirstName,
+		LastName:    req.LastName,
+		Email:       req.Email,
+		PhoneNumber: req.PhoneNumber,
+		Address:     req.Address,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrClientNotFound):
+			return nil, status.Errorf(codes.NotFound, "client %d not found", req.Id)
+		case errors.Is(err, domain.ErrEmailTaken):
+			return nil, status.Errorf(codes.AlreadyExists, "email is already in use")
+		default:
+			return nil, status.Errorf(codes.Internal, "failed to update client")
+		}
+	}
+
+	// ── 4. Map and return ─────────────────────────────────────────────────────
+	return &pb.UpdateClientResponse{
+		Client: &pb.ClientDetail{
+			Id:          updated.ID,
+			FirstName:   updated.FirstName,
+			LastName:    updated.LastName,
+			Email:       updated.Email,
+			PhoneNumber: updated.PhoneNumber,
+			Address:     updated.Address,
+			DateOfBirth: updated.DateOfBirth,
+			Gender:      genderFromString(sql.NullString{String: updated.Gender, Valid: updated.Gender != ""}),
+		},
 	}, nil
 }
 

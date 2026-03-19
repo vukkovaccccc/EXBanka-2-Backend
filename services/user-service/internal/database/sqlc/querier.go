@@ -63,6 +63,11 @@ type Querier interface {
 	// Pass NULL for any filter to skip it; the handler maps "" → nil for that purpose.
 	// Joins employee_details so only users with an employee profile are returned.
 	ListEmployees(ctx context.Context, arg ListEmployeesParams) ([]ListEmployeesRow, error)
+	// ─── Client listing (management portal) ──────────────────────────────────────
+	// Returns clients matching optional name/email filters, sorted by last_name ASC.
+	// name matches first_name, last_name, or the concatenated full name.
+	// Pass NULL for either filter to skip it; request limit+1 to detect has_more.
+	ListClients(ctx context.Context, arg ListClientsParams) ([]ListClientsRow, error)
 	// ─── Client search (Autocomplete / Infinite Scroll) ───────────────────────────
 	// Returns clients matching an optional query string against first_name, last_name,
 	// or email, ordered by created_at DESC. Pass NULL for query to return all clients.

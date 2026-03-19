@@ -12,10 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pb "banka-backend/proto/user"
+	auth "banka-backend/shared/auth"
 	sqlc "banka-backend/services/user-service/internal/database/sqlc"
+	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/handler"
 	"banka-backend/services/user-service/internal/testutil"
-	"banka-backend/services/user-service/internal/utils"
+	utils "banka-backend/services/user-service/internal/utils"
 	"banka-backend/services/user-service/mocks"
 
 	"golang.org/x/crypto/bcrypt"
@@ -25,6 +27,7 @@ import (
 
 // newHandler builds a UserHandler with mock dependencies.
 // sqlDB is nil for tests that never reach BeginTx (validation/auth early exits).
+// clientSvc is nil — use newHandlerWithClientSvc for GetClientByID tests.
 func newHandler(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) *handler.UserHandler {
 	return handler.NewUserHandler(
 		q, nil,
@@ -32,6 +35,20 @@ func newHandler(q *mocks.MockQuerier, pub *mocks.MockEmailPublisher) *handler.Us
 		testutil.TestRefreshSecret,
 		testutil.TestActivationSecret,
 		pub,
+		nil, // clientSvc — not needed by the existing tests
+	)
+}
+
+// newHandlerWithClientSvc builds a UserHandler wired with a mock ClientService.
+// Use this for GetClientByID tests that need the service layer exercised.
+func newHandlerWithClientSvc(clientSvc *mocks.MockClientService) *handler.UserHandler {
+	return handler.NewUserHandler(
+		&mocks.MockQuerier{}, nil,
+		testutil.TestAccessSecret,
+		testutil.TestRefreshSecret,
+		testutil.TestActivationSecret,
+		&mocks.MockEmailPublisher{},
+		clientSvc,
 	)
 }
 
@@ -168,7 +185,7 @@ func TestRefreshToken(t *testing.T) {
 	}
 
 	validRefresh := func() string {
-		_, r, _ := utils.GenerateTokens("5", "user@test.com", "EMPLOYEE", nil,
+		_, r, _ := auth.GenerateTokens("5", "user@test.com", "EMPLOYEE", nil,
 			testutil.TestAccessSecret, testutil.TestRefreshSecret)
 		return r
 	}
@@ -517,7 +534,7 @@ func TestToggleEmployeeActive(t *testing.T) {
 // ─── SetPassword ──────────────────────────────────────────────────────────────
 
 func TestSetPassword(t *testing.T) {
-	validToken, _ := utils.GenerateActivationToken("setpw@test.com", testutil.TestActivationSecret)
+	validToken, _ := auth.GenerateActivationToken("setpw@test.com", testutil.TestActivationSecret)
 
 	tests := []struct {
 		name     string
@@ -583,7 +600,7 @@ func TestSetPassword(t *testing.T) {
 // ─── ActivateAccount ──────────────────────────────────────────────────────────
 
 func TestActivateAccount(t *testing.T) {
-	validToken, _ := utils.GenerateActivationToken("activate@test.com", testutil.TestActivationSecret)
+	validToken, _ := auth.GenerateActivationToken("activate@test.com", testutil.TestActivationSecret)
 
 	tests := []struct {
 		name     string
@@ -703,7 +720,7 @@ func TestForgotPassword(t *testing.T) {
 // ─── ResetPassword ────────────────────────────────────────────────────────────
 
 func TestResetPassword(t *testing.T) {
-	validToken, _ := utils.GenerateResetToken("reset@test.com", testutil.TestActivationSecret)
+	validToken, _ := auth.GenerateResetToken("reset@test.com", testutil.TestActivationSecret)
 
 	tests := []struct {
 		name     string
@@ -1033,3 +1050,349 @@ func TestCreateClient(t *testing.T) {
 	}
 }
 
+
+// ─── GetClientByID ────────────────────────────────────────────────────────────
+
+func TestGetClientByID(t *testing.T) {
+	fullClient := &domain.ClientDetail{
+		ID:          42,
+		FirstName:   "Ana",
+		LastName:    "Petrović",
+		Email:       "ana@test.com",
+		PhoneNumber: "+381601234567",
+		Address:     "Knez Mihailova 1",
+		DateOfBirth: 946684800000,
+		Gender:      "FEMALE",
+	}
+
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		req       *pb.GetClientByIDRequest
+		setup     func(svc *mocks.MockClientService)
+		wantCode  codes.Code
+		checkResp func(t *testing.T, r *pb.GetClientByIDResponse)
+	}{
+		{
+			name: "success",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.GetClientByIDRequest{Id: 42},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("GetClientByID", mock.Anything, int64(42)).Return(fullClient, nil)
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.GetClientByIDResponse) {
+				require.NotNil(t, r.Client)
+				assert.Equal(t, int64(42), r.Client.Id)
+				assert.Equal(t, "Ana", r.Client.FirstName)
+				assert.Equal(t, "Petrović", r.Client.LastName)
+				assert.Equal(t, "ana@test.com", r.Client.Email)
+				assert.Equal(t, "+381601234567", r.Client.PhoneNumber)
+				assert.Equal(t, "Knez Mihailova 1", r.Client.Address)
+				assert.Equal(t, int64(946684800000), r.Client.DateOfBirth)
+				assert.Equal(t, pb.Gender_GENDER_FEMALE, r.Client.Gender)
+			},
+		},
+		{
+			name:     "unauthenticated — no claims",
+			ctx:      testutil.UnauthenticatedContext(),
+			req:      &pb.GetClientByIDRequest{Id: 42},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "permission denied — admin caller",
+			ctx:      testutil.AdminContext(),
+			req:      &pb.GetClientByIDRequest{Id: 42},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "invalid argument — zero id",
+			ctx:      testutil.EmployeeContext("10", nil),
+			req:      &pb.GetClientByIDRequest{Id: 0},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "not found — unknown id",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.GetClientByIDRequest{Id: 999},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("GetClientByID", mock.Anything, int64(999)).Return(nil, domain.ErrClientNotFound)
+			},
+			wantCode: codes.NotFound,
+		},
+		{
+			name: "not found — employee row rejected by service",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.GetClientByIDRequest{Id: 5},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("GetClientByID", mock.Anything, int64(5)).Return(nil, domain.ErrClientNotFound)
+			},
+			wantCode: codes.NotFound,
+		},
+		{
+			name: "internal — unexpected db error",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.GetClientByIDRequest{Id: 1},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("GetClientByID", mock.Anything, int64(1)).Return(nil, errors.New("db down"))
+			},
+			wantCode: codes.Internal,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mocks.MockClientService{}
+			tc.setup(svc)
+			h := newHandlerWithClientSvc(svc)
+
+			resp, err := h.GetClientByID(tc.ctx, tc.req)
+			assert.Equal(t, tc.wantCode, grpcCode(err))
+			if tc.wantCode == codes.OK {
+				require.NoError(t, err)
+				if tc.checkResp != nil {
+					tc.checkResp(t, resp)
+				}
+			} else {
+				assert.Nil(t, resp)
+			}
+			svc.AssertExpectations(t)
+		})
+	}
+}
+
+// ─── UpdateClient ─────────────────────────────────────────────────────────────
+
+func TestUpdateClient(t *testing.T) {
+	updatedClient := &domain.ClientDetail{
+		ID:          42,
+		FirstName:   "Ana",
+		LastName:    "Petrović",
+		Email:       "new@test.com",
+		PhoneNumber: "+381611111111",
+		Address:     "Knez Mihailova 1",
+		DateOfBirth: 946684800000,
+		Gender:      "FEMALE",
+	}
+
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		req       *pb.UpdateClientRequest
+		setup     func(svc *mocks.MockClientService)
+		wantCode  codes.Code
+		checkResp func(t *testing.T, r *pb.UpdateClientResponse)
+	}{
+		{
+			name: "success",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.UpdateClientRequest{Id: 42, Email: "new@test.com", PhoneNumber: "+381611111111"},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("UpdateClient", mock.Anything, int64(42), domain.UpdateClientInput{
+					Email: "new@test.com", PhoneNumber: "+381611111111",
+				}).Return(updatedClient, nil)
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.UpdateClientResponse) {
+				require.NotNil(t, r.Client)
+				assert.Equal(t, int64(42), r.Client.Id)
+				assert.Equal(t, "new@test.com", r.Client.Email)
+				assert.Equal(t, "+381611111111", r.Client.PhoneNumber)
+				assert.Equal(t, pb.Gender_GENDER_FEMALE, r.Client.Gender)
+			},
+		},
+		{
+			name:     "unauthenticated — no claims",
+			ctx:      testutil.UnauthenticatedContext(),
+			req:      &pb.UpdateClientRequest{Id: 42, FirstName: "X"},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "permission denied — admin caller",
+			ctx:      testutil.AdminContext(),
+			req:      &pb.UpdateClientRequest{Id: 42, FirstName: "X"},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "invalid argument — zero id",
+			ctx:      testutil.EmployeeContext("10", nil),
+			req:      &pb.UpdateClientRequest{Id: 0, FirstName: "X"},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid argument — bad phone number",
+			ctx:      testutil.EmployeeContext("10", nil),
+			req:      &pb.UpdateClientRequest{Id: 42, PhoneNumber: "not-a-phone"},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "not found — unknown id",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.UpdateClientRequest{Id: 999, FirstName: "X"},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("UpdateClient", mock.Anything, int64(999), domain.UpdateClientInput{FirstName: "X"}).
+					Return(nil, domain.ErrClientNotFound)
+			},
+			wantCode: codes.NotFound,
+		},
+		{
+			name: "already exists — email taken",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.UpdateClientRequest{Id: 42, Email: "taken@test.com"},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("UpdateClient", mock.Anything, int64(42), domain.UpdateClientInput{Email: "taken@test.com"}).
+					Return(nil, domain.ErrEmailTaken)
+			},
+			wantCode: codes.AlreadyExists,
+		},
+		{
+			name: "internal — unexpected db error",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.UpdateClientRequest{Id: 42, FirstName: "X"},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("UpdateClient", mock.Anything, int64(42), domain.UpdateClientInput{FirstName: "X"}).
+					Return(nil, errors.New("db down"))
+			},
+			wantCode: codes.Internal,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mocks.MockClientService{}
+			tc.setup(svc)
+			h := newHandlerWithClientSvc(svc)
+
+			resp, err := h.UpdateClient(tc.ctx, tc.req)
+			assert.Equal(t, tc.wantCode, grpcCode(err))
+			if tc.wantCode == codes.OK {
+				require.NoError(t, err)
+				if tc.checkResp != nil {
+					tc.checkResp(t, resp)
+				}
+			} else {
+				assert.Nil(t, resp)
+			}
+			svc.AssertExpectations(t)
+		})
+	}
+}
+
+// ─── ListClients ──────────────────────────────────────────────────────────────
+
+func TestListClients(t *testing.T) {
+	summaries := []domain.ClientSummary{
+		{ID: 1, FirstName: "Ana", LastName: "Petrović", Email: "ana@test.com", PhoneNumber: "+381601234567"},
+		{ID: 2, FirstName: "Marko", LastName: "Nikolić", Email: "marko@test.com", PhoneNumber: ""},
+	}
+
+	tests := []struct {
+		name      string
+		ctx       context.Context
+		req       *pb.ListClientsRequest
+		setup     func(svc *mocks.MockClientService)
+		wantCode  codes.Code
+		checkResp func(t *testing.T, r *pb.ListClientsResponse)
+	}{
+		{
+			name: "success — no filter",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.ListClientsRequest{},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("ListClients", mock.Anything, domain.ClientFilter{}).
+					Return(summaries, false, nil)
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.ListClientsResponse) {
+				require.Len(t, r.Clients, 2)
+				assert.False(t, r.HasMore)
+				assert.Equal(t, int64(1), r.Clients[0].Id)
+				assert.Equal(t, "Ana", r.Clients[0].FirstName)
+				assert.Equal(t, "Petrović", r.Clients[0].LastName)
+				assert.Equal(t, "ana@test.com", r.Clients[0].Email)
+				assert.Equal(t, "+381601234567", r.Clients[0].PhoneNumber)
+				assert.Equal(t, int64(2), r.Clients[1].Id)
+			},
+		},
+		{
+			name: "success — filter by name, has_more",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.ListClientsRequest{Name: "Petrović", Limit: 1},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("ListClients", mock.Anything, domain.ClientFilter{Name: "Petrović", Limit: 1}).
+					Return(summaries[:1], true, nil)
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.ListClientsResponse) {
+				require.Len(t, r.Clients, 1)
+				assert.True(t, r.HasMore)
+				assert.Equal(t, "Ana", r.Clients[0].FirstName)
+			},
+		},
+		{
+			name: "success — filter by email",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.ListClientsRequest{Email: "@test.com", Limit: 5},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("ListClients", mock.Anything, domain.ClientFilter{Email: "@test.com", Limit: 5}).
+					Return(summaries, false, nil)
+			},
+			wantCode: codes.OK,
+			checkResp: func(t *testing.T, r *pb.ListClientsResponse) {
+				assert.Len(t, r.Clients, 2)
+				assert.False(t, r.HasMore)
+			},
+		},
+		{
+			name:     "permission denied — unauthenticated",
+			ctx:      testutil.UnauthenticatedContext(),
+			req:      &pb.ListClientsRequest{},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name:     "permission denied — admin caller",
+			ctx:      testutil.AdminContext(),
+			req:      &pb.ListClientsRequest{},
+			setup:    func(svc *mocks.MockClientService) {},
+			wantCode: codes.PermissionDenied,
+		},
+		{
+			name: "internal — db error",
+			ctx:  testutil.EmployeeContext("10", nil),
+			req:  &pb.ListClientsRequest{},
+			setup: func(svc *mocks.MockClientService) {
+				svc.On("ListClients", mock.Anything, domain.ClientFilter{}).
+					Return(nil, false, errors.New("db down"))
+			},
+			wantCode: codes.Internal,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mocks.MockClientService{}
+			tc.setup(svc)
+			h := newHandlerWithClientSvc(svc)
+
+			resp, err := h.ListClients(tc.ctx, tc.req)
+			assert.Equal(t, tc.wantCode, grpcCode(err))
+			if tc.wantCode == codes.OK {
+				require.NoError(t, err)
+				if tc.checkResp != nil {
+					tc.checkResp(t, resp)
+				}
+			} else {
+				assert.Nil(t, resp)
+			}
+			svc.AssertExpectations(t)
+		})
+	}
+}
