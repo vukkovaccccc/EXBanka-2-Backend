@@ -18,7 +18,7 @@
   "paths": {
     "/activate": {
       "post": {
-        "summary": "ActivateAccount — Called by the employee from the activation email link.\r\nSets the password and marks the account ready for login.",
+        "summary": "ActivateAccount — Called by the employee from the activation email link.\nSets the password and marks the account ready for login.",
         "operationId": "UserService_ActivateAccount",
         "responses": {
           "200": {
@@ -51,7 +51,7 @@
     },
     "/auth/forgot-password": {
       "post": {
-        "summary": "ForgotPassword — Sends a reset link to the given email address.\r\nAlways responds successfully to prevent user enumeration.",
+        "summary": "ForgotPassword — Sends a reset link to the given email address.\nAlways responds successfully to prevent user enumeration.",
         "operationId": "UserService_ForgotPassword",
         "responses": {
           "200": {
@@ -84,7 +84,7 @@
     },
     "/auth/reset-password": {
       "post": {
-        "summary": "ResetPassword — Consumes a reset JWT and writes the new hashed password.\r\nPublic: no Authorization header required.",
+        "summary": "ResetPassword — Consumes a reset JWT and writes the new hashed password.\nPublic: no Authorization header required.",
         "operationId": "UserService_ResetPassword",
         "responses": {
           "200": {
@@ -117,7 +117,7 @@
     },
     "/auth/set-password": {
       "post": {
-        "summary": "SetPassword — Called by the employee from the activation email link.\r\nVerifies the activation JWT and writes the hashed password.\r\nPublic: no Authorization header required.",
+        "summary": "SetPassword — Called by the employee from the activation email link.\nVerifies the activation JWT and writes the hashed password.\nPublic: no Authorization header required.",
         "operationId": "UserService_SetPassword",
         "responses": {
           "200": {
@@ -150,7 +150,7 @@
     },
     "/client": {
       "get": {
-        "summary": "ListClients — Employee only.\r\nReturns a paginated, alphabetically-sorted list of clients for the\r\nmanagement portal.  Supports optional name and email filters.",
+        "summary": "ListClients — Employee only.\nReturns a paginated, alphabetically-sorted list of clients for the\nmanagement portal.  Supports optional name and email filters.",
         "operationId": "UserService_ListClients",
         "responses": {
           "200": {
@@ -203,7 +203,7 @@
         ]
       },
       "post": {
-        "summary": "CreateClient — Employee only.\r\nCreates a new physical client account (no password). An activation email\r\nis sent asynchronously via the Notification service.",
+        "summary": "CreateClient — Employee only.\nCreates a new physical client account (no password). An activation email\nis sent asynchronously via the Notification service.",
         "operationId": "UserService_CreateClient",
         "responses": {
           "200": {
@@ -236,7 +236,7 @@
     },
     "/client/search": {
       "get": {
-        "summary": "SearchClients — Employee only.\r\nSearches clients by first/last name or email for Autocomplete and\r\nInfinite Scroll on the account-creation form.\r\nEmpty query returns all clients (paginated).",
+        "summary": "SearchClients — Employee only.\nSearches clients by first/last name or email for Autocomplete and\nInfinite Scroll on the account-creation form.\nEmpty query returns all clients (paginated).",
         "operationId": "UserService_SearchClients",
         "responses": {
           "200": {
@@ -284,7 +284,7 @@
     },
     "/client/{id}": {
       "get": {
-        "summary": "GetClientByID — Employee only.\r\nReturns the full profile of a single client for the employee portal.\r\nReturns NOT_FOUND when the ID is unknown or the user is not a CLIENT.",
+        "summary": "GetClientByID — Employee only.\nReturns the full profile of a single client for the employee portal.\nReturns NOT_FOUND when the ID is unknown or the user is not a CLIENT.",
         "operationId": "UserService_GetClientByID",
         "responses": {
           "200": {
@@ -315,7 +315,7 @@
         ]
       },
       "patch": {
-        "summary": "UpdateClient — Employee only.\r\nPartially updates the mutable fields of an existing client.\r\nReturns NOT_FOUND if the client does not exist.\r\nReturns ALREADY_EXISTS if the email is already in use by another account.",
+        "summary": "UpdateClient — Employee only.\nPartially updates the mutable fields of an existing client.\nReturns NOT_FOUND if the client does not exist.\nReturns ALREADY_EXISTS if the email is already in use by another account.",
         "operationId": "UserService_UpdateClient",
         "responses": {
           "200": {
@@ -356,7 +356,7 @@
     },
     "/employee": {
       "get": {
-        "summary": "GetAllEmployees — Admin only.\r\nLists employees with optional partial-match filters and pagination.",
+        "summary": "GetAllEmployees — Admin only.\nLists employees with optional partial-match filters and pagination.",
         "operationId": "UserService_GetAllEmployees",
         "responses": {
           "200": {
@@ -420,7 +420,7 @@
         ]
       },
       "post": {
-        "summary": "CreateEmployee — Admin only.\r\nCreates a new employee account (no password). An activation email is sent\r\nautomatically via the Notification service.",
+        "summary": "CreateEmployee — Admin only.\nCreates a new employee account (no password). An activation email is sent\nautomatically via the Notification service.",
         "operationId": "UserService_CreateEmployee",
         "responses": {
           "200": {
@@ -453,7 +453,7 @@
     },
     "/employee/{id}": {
       "get": {
-        "summary": "GetEmployeeByID — Admin or MANAGE_USERS permission.\r\nReturns the full employee profile + permissions for the edit form.",
+        "summary": "GetEmployeeByID — Admin or MANAGE_USERS permission.\nReturns the full employee profile + permissions for the edit form.",
         "operationId": "UserService_GetEmployeeByID",
         "responses": {
           "200": {
@@ -483,7 +483,7 @@
         ]
       },
       "put": {
-        "summary": "UpdateEmployee — Admin or MANAGE_USERS permission.\r\nReplaces all mutable employee fields and their full permission set atomically.",
+        "summary": "UpdateEmployee — Admin or MANAGE_USERS permission.\nReplaces all mutable employee fields and their full permission set atomically.",
         "operationId": "UserService_UpdateEmployee",
         "responses": {
           "200": {
@@ -588,7 +588,7 @@
     },
     "/login": {
       "post": {
-        "summary": "Login — Authenticates with email + password.\r\nReturns JWT access and refresh tokens.\r\ngRPC error codes: UNAUTHENTICATED (wrong creds / inactive), NOT_FOUND (no such email).",
+        "summary": "Login — Authenticates with email + password.\nReturns JWT access and refresh tokens.\ngRPC error codes: UNAUTHENTICATED (wrong creds / inactive), NOT_FOUND (no such email).",
         "operationId": "UserService_Login",
         "responses": {
           "200": {
@@ -621,7 +621,7 @@
     },
     "/permissions": {
       "get": {
-        "summary": "GetAllPermissions — Admin only.\r\nReturns the full permission codebook for the Create/Edit Employee forms.",
+        "summary": "GetAllPermissions — Admin only.\nReturns the full permission codebook for the Create/Edit Employee forms.",
         "operationId": "UserService_GetAllPermissions",
         "responses": {
           "200": {
@@ -644,7 +644,7 @@
     },
     "/refresh-token": {
       "post": {
-        "summary": "RefreshToken — Exchanges a valid refresh token for a new access token.\r\nThe original refresh token is returned unchanged (no rolling sessions).",
+        "summary": "RefreshToken — Exchanges a valid refresh token for a new access token.\nThe original refresh token is returned unchanged (no rolling sessions).",
         "operationId": "UserService_RefreshToken",
         "responses": {
           "200": {
@@ -677,7 +677,7 @@
     },
     "/user/me": {
       "get": {
-        "summary": "GetMyProfile — Any authenticated user.\r\nReturns the caller's own profile information.",
+        "summary": "GetMyProfile — Any authenticated user.\nReturns the caller's own profile information.",
         "operationId": "UserService_GetMyProfile",
         "responses": {
           "200": {
@@ -865,7 +865,7 @@
           "$ref": "#/definitions/v1Gender"
         }
       },
-      "description": "ClientDetail is the full client profile returned by the employee portal.\r\nReturned on the GetClientByID endpoint — no secrets exposed."
+      "description": "ClientDetail is the full client profile returned by the employee portal.\nReturned on the GetClientByID endpoint — no secrets exposed."
     },
     "v1ClientListItem": {
       "type": "object",
@@ -887,7 +887,7 @@
           "type": "string"
         }
       },
-      "description": "ClientListItem is the per-row projection returned by the ListClients endpoint.\r\nIncludes phone_number (unlike the lighter ClientPreview used for autocomplete)."
+      "description": "ClientListItem is the per-row projection returned by the ListClients endpoint.\nIncludes phone_number (unlike the lighter ClientPreview used for autocomplete)."
     },
     "v1ClientPreview": {
       "type": "object",
@@ -989,7 +989,7 @@
         },
         "isActive": {
           "type": "boolean",
-          "description": "Optional: admin may create the account as inactive.\r\nDefaults to true (is_active DEFAULT TRUE in DB)."
+          "description": "Optional: admin may create the account as inactive.\nDefaults to true (is_active DEFAULT TRUE in DB)."
         },
         "permissions": {
           "type": "array",
@@ -1000,7 +1000,7 @@
         },
         "userType": {
           "$ref": "#/definitions/v1UserType",
-          "description": "Type of user being created. Defaults to USER_TYPE_EMPLOYEE if unspecified.\r\nUse USER_TYPE_ADMIN to create an administrator account."
+          "description": "Type of user being created. Defaults to USER_TYPE_EMPLOYEE if unspecified.\nUse USER_TYPE_ADMIN to create an administrator account."
         }
       }
     },
@@ -1041,7 +1041,7 @@
           "title": "list of permission_code values from user_permissions"
         }
       },
-      "description": "EmployeeProfile combines User with the employee_details join.\r\nReturned on get/list endpoints — no secrets."
+      "description": "EmployeeProfile combines User with the employee_details join.\nReturned on get/list endpoints — no secrets."
     },
     "v1ForgotPasswordRequest": {
       "type": "object",
@@ -1356,7 +1356,7 @@
           "format": "date-time"
         }
       },
-      "description": "User is the safe public projection of the users table.\r\nIMPORTANT: never populate password_hash or salt_password here."
+      "description": "User is the safe public projection of the users table.\nIMPORTANT: never populate password_hash or salt_password here."
     },
     "v1UserType": {
       "type": "string",

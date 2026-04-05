@@ -13,6 +13,7 @@ import (
 	pb "banka-backend/proto/banka"
 	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	"banka-backend/services/bank-service/internal/trading"
 	"banka-backend/services/bank-service/internal/transport"
 	"banka-backend/services/bank-service/internal/worker"
 
@@ -46,10 +47,11 @@ type BankHandler struct {
 	kreditService    domain.KreditService
 	karticaService   domain.KarticaService
 	berzaService     domain.BerzaService
-	listingService    domain.ListingService
-	exchangeService   domain.ExchangeService
-	userClient        clientEmailLookup
-	accountPublisher  worker.AccountEmailPublisher
+	listingService   domain.ListingService
+	exchangeService  domain.ExchangeService
+	tradingService   trading.TradingService
+	userClient       clientEmailLookup
+	accountPublisher worker.AccountEmailPublisher
 }
 
 func NewBankHandler(
@@ -62,6 +64,7 @@ func NewBankHandler(
 	berzaService domain.BerzaService,
 	listingService domain.ListingService,
 	exchangeService domain.ExchangeService,
+	tradingService trading.TradingService,
 	userClient clientEmailLookup,
 	accountPublisher worker.AccountEmailPublisher,
 ) *BankHandler {
@@ -75,6 +78,7 @@ func NewBankHandler(
 		berzaService:     berzaService,
 		listingService:   listingService,
 		exchangeService:  exchangeService,
+		tradingService:   tradingService,
 		userClient:       userClient,
 		accountPublisher: accountPublisher,
 	}

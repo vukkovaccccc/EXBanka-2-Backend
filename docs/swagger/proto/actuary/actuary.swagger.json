@@ -18,7 +18,7 @@
   "paths": {
     "/actuary/agents": {
       "get": {
-        "summary": "GetAgents — Supervisor only.\r\nReturns the list of agents visible in the actuary management portal.\r\nSupports optional partial-match filters on email, first_name, last_name, position.",
+        "summary": "GetAgents — Supervisor only.\nReturns the list of agents visible in the actuary management portal.\nSupports optional partial-match filters on email, first_name, last_name, position.",
         "operationId": "ActuaryService_GetAgents",
         "responses": {
           "200": {
@@ -68,7 +68,7 @@
     },
     "/actuary/agents/{employeeId}/limit": {
       "patch": {
-        "summary": "SetAgentLimit — Supervisor only.\r\nUpdates the daily spending limit for the specified agent.",
+        "summary": "SetAgentLimit — Supervisor only.\nUpdates the daily spending limit for the specified agent.",
         "operationId": "ActuaryService_SetAgentLimit",
         "responses": {
           "200": {
@@ -110,7 +110,7 @@
     },
     "/actuary/agents/{employeeId}/need-approval": {
       "patch": {
-        "summary": "SetAgentNeedApproval — Supervisor only.\r\nSets or clears the need_approval flag for the specified agent.",
+        "summary": "SetAgentNeedApproval — Supervisor only.\nSets or clears the need_approval flag for the specified agent.",
         "operationId": "ActuaryService_SetAgentNeedApproval",
         "responses": {
           "200": {
@@ -152,7 +152,7 @@
     },
     "/actuary/agents/{employeeId}/reset-limit": {
       "post": {
-        "summary": "ResetAgentUsedLimit — Supervisor only.\r\nResets the agent's used_limit to 0 (manual daily reset).",
+        "summary": "ResetAgentUsedLimit — Supervisor only.\nResets the agent's used_limit to 0 (manual daily reset).",
         "operationId": "ActuaryService_ResetAgentUsedLimit",
         "responses": {
           "200": {
@@ -194,7 +194,7 @@
     },
     "/actuary/employee/{employeeId}": {
       "get": {
-        "summary": "GetActuaryByEmployeeID — Supervisor only (internal use).\r\nReturns ActuaryInfo for the specified employee, or NOT_FOUND if they are not an actuary.",
+        "summary": "GetActuaryByEmployeeID — Supervisor only (internal use).\nReturns ActuaryInfo for the specified employee, or NOT_FOUND if they are not an actuary.",
         "operationId": "ActuaryService_GetActuaryByEmployeeID",
         "responses": {
           "200": {
@@ -226,7 +226,7 @@
     },
     "/actuary/me": {
       "get": {
-        "summary": "GetMyActuaryInfo — Actuary only (supervisor or agent).\r\nReturns the ActuaryInfo record for the calling employee.",
+        "summary": "GetMyActuaryInfo — Actuary only (supervisor or agent).\nReturns the ActuaryInfo record for the calling employee.",
         "operationId": "ActuaryService_GetMyActuaryInfo",
         "responses": {
           "200": {
@@ -329,7 +329,7 @@
           "title": "if true, all agent orders need supervisor approval"
         }
       },
-      "description": "ActuaryInfo is the extension record stored alongside an Employee.\r\nSupervisors always have limit=0, used_limit=0, need_approval=false."
+      "description": "ActuaryInfo is the extension record stored alongside an Employee.\nSupervisors always have limit=0, used_limit=0, need_approval=false."
     },
     "v1ActuaryType": {
       "type": "string",
@@ -339,7 +339,7 @@
         "ACTUARY_TYPE_AGENT"
       ],
       "default": "ACTUARY_TYPE_UNSPECIFIED",
-      "description": "ActuaryType distinguishes supervisors (no limit, always approved) from\r\nagents (have a daily limit and may require approval)."
+      "description": "ActuaryType distinguishes supervisors (no limit, always approved) from\nagents (have a daily limit and may require approval)."
     },
     "v1AgentListItem": {
       "type": "object",
@@ -377,7 +377,7 @@
           "type": "boolean"
         }
       },
-      "description": "AgentListItem is the per-row projection for the supervisor portal.\r\nCombines ActuaryInfo fields with identifying user fields (fetched from user-service)."
+      "description": "AgentListItem is the per-row projection for the supervisor portal.\nCombines ActuaryInfo fields with identifying user fields (fetched from user-service)."
     },
     "v1GetActuaryByEmployeeIDResponse": {
       "type": "object",

@@ -174,7 +174,10 @@ func main() {
 	exchangeTransferRepo := repository.NewExchangeTransferRepository(db)
 	exchangeService := service.NewExchangeService(exchangeProvider, exchangeTransferRepo, cfg.ExchangeSpreadRate, cfg.ExchangeProvizijaRate)
 
-	bankHandler := handler.NewBankHandler(currencyService, delatnostService, accountService, paymentService, kreditService, karticaService, berzaService, listingService, exchangeService, userClient, accountPublisher)
+	// tradingService is wired up in a later sprint when OrderRepository,
+	// MarginChecker, and ActuaryRepository implementations are complete.
+	// Pass nil for now — the handler methods will return Internal error until wired.
+	bankHandler := handler.NewBankHandler(currencyService, delatnostService, accountService, paymentService, kreditService, karticaService, berzaService, listingService, exchangeService, nil, userClient, accountPublisher)
 
 	receiptHandler := handler.NewPaymentReceiptHandler(paymentService, cfg.JWTAccessSecret)
 	marketModeHTTPHandler := handler.NewMarketModeHTTPHandler(marketModeStore, cfg.JWTAccessSecret)

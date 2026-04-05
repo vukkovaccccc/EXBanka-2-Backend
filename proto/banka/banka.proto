@@ -629,6 +629,104 @@ message CreateListingOrderResponse {
   string message = 1;
 }
 
+// ─── Trading (Celina 4) ───────────────────────────────────────────────────────
+
+// TradingOrder predstavlja jedan nalog za hartiju od vrednosti.
+message TradingOrder {
+  int64           id                 = 1;
+  int64           user_id            = 2;
+  int64           account_id         = 3;
+  int64           listing_id         = 4;
+  string          order_type         = 5;  // MARKET | LIMIT | STOP | STOP_LIMIT
+  string          direction          = 6;  // BUY | SELL
+  int32           quantity           = 7;
+  int32           contract_size      = 8;
+  optional string price_per_unit     = 9;  // nil za MARKET naloge
+  optional string stop_price         = 10; // nil za MARKET i LIMIT naloge
+  string          status             = 11; // PENDING | APPROVED | DECLINED | DONE | CANCELED
+  optional int64  approved_by        = 12; // nil dok nije pregledano
+  bool            is_done            = 13;
+  int32           remaining_portions = 14;
+  bool            after_hours        = 15;
+  bool            all_or_none        = 16;
+  bool            margin             = 17;
+  string          last_modified      = 18; // ISO 8601
+  string          created_at         = 19; // ISO 8601
+}
+
+// TradingCalculateRequest — ulazni parametri za procenu cene i provizije.
+message TradingCalculateRequest {
+  string          order_type    = 1; // MARKET | LIMIT | STOP | STOP_LIMIT
+  string          direction     = 2; // BUY | SELL
+  int64           listing_id    = 3;
+  int32           quantity      = 4;
+  int32           contract_size = 5;
+  optional string price_per_unit = 6; // obavezno za LIMIT i STOP_LIMIT
+  optional string stop_price    = 7;  // obavezno za STOP i STOP_LIMIT
+  bool            margin        = 8;
+  bool            all_or_none   = 9;
+}
+
+// TradingCalculateResponse — procenjena cena, provizija i (opciono) inicijalna marža.
+message TradingCalculateResponse {
+  string          price_per_unit      = 1;
+  string          approximate_price   = 2;
+  string          commission          = 3;
+  optional string initial_margin_cost = 4; // samo kada je margin=true
+}
+
+// TradingCreateOrderRequest — sve potrebno za kreiranje naloga.
+message TradingCreateOrderRequest {
+  int64           account_id    = 1;
+  int64           listing_id    = 2;
+  string          order_type    = 3; // MARKET | LIMIT | STOP | STOP_LIMIT
+  string          direction     = 4; // BUY | SELL
+  int32           quantity      = 5;
+  int32           contract_size = 6;
+  optional string price_per_unit = 7;
+  optional string stop_price    = 8;
+  bool            after_hours   = 9;
+  bool            all_or_none   = 10;
+  bool            margin        = 11;
+}
+
+message TradingCreateOrderResponse {
+  TradingOrder order = 1;
+}
+
+// TradingListOrdersRequest — opcionalni filter po statusu; prazno = svi nalozi.
+message TradingListOrdersRequest {
+  optional string status = 1;
+}
+
+message TradingListOrdersResponse {
+  repeated TradingOrder orders = 1;
+}
+
+message TradingApproveOrderRequest {
+  int64 order_id = 1;
+}
+
+message TradingApproveOrderResponse {
+  TradingOrder order = 1;
+}
+
+message TradingDeclineOrderRequest {
+  int64 order_id = 1;
+}
+
+message TradingDeclineOrderResponse {
+  TradingOrder order = 1;
+}
+
+message TradingCancelOrderRequest {
+  int64 order_id = 1;
+}
+
+message TradingCancelOrderResponse {
+  TradingOrder order = 1;
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 service BankaService {
@@ -938,6 +1036,55 @@ service BankaService {
   rpc CreateListingOrder(CreateListingOrderRequest) returns (CreateListingOrderResponse) {
     option (google.api.http) = {
       post: "/bank/listings/orders"
+      body: "*"
+    };
+  }
+
+  // ─── Trading (Celina 4) ───────────────────────────────────────────────────
+
+  // TradingCalculate — Authenticated. Vraća procenu cene i provizije bez perzistencije.
+  rpc TradingCalculate(TradingCalculateRequest) returns (TradingCalculateResponse) {
+    option (google.api.http) = {
+      post: "/bank/trading/calculate"
+      body: "*"
+    };
+  }
+
+  // TradingCreateOrder — Authenticated. Kreira novi nalog; workflow odobravanja je u servisu.
+  rpc TradingCreateOrder(TradingCreateOrderRequest) returns (TradingCreateOrderResponse) {
+    option (google.api.http) = {
+      post: "/bank/trading/orders"
+      body: "*"
+    };
+  }
+
+  // TradingListOrders — Employee only. Lista naloga sa opcionim filterom statusa.
+  rpc TradingListOrders(TradingListOrdersRequest) returns (TradingListOrdersResponse) {
+    option (google.api.http) = {
+      get: "/bank/trading/orders"
+    };
+  }
+
+  // TradingApproveOrder — Employee only. Odobrava PENDING nalog.
+  rpc TradingApproveOrder(TradingApproveOrderRequest) returns (TradingApproveOrderResponse) {
+    option (google.api.http) = {
+      post: "/bank/trading/orders/{order_id}/approve"
+      body: "*"
+    };
+  }
+
+  // TradingDeclineOrder — Employee only. Odbija PENDING nalog.
+  rpc TradingDeclineOrder(TradingDeclineOrderRequest) returns (TradingDeclineOrderResponse) {
+    option (google.api.http) = {
+      post: "/bank/trading/orders/{order_id}/decline"
+      body: "*"
+    };
+  }
+
+  // TradingCancelOrder — Vlasnik naloga ili Employee. Otkazuje aktivan nalog.
+  rpc TradingCancelOrder(TradingCancelOrderRequest) returns (TradingCancelOrderResponse) {
+    option (google.api.http) = {
+      post: "/bank/trading/orders/{order_id}/cancel"
       body: "*"
     };
   }

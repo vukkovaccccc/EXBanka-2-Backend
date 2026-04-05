@@ -305,7 +305,7 @@
     },
     "/bank/admin/exchanges/test-mode": {
       "post": {
-        "summary": "ToggleMarketTestMode — Admin/Employee only. Uključuje ili isključuje\r\nbypass radnog vremena berzi (čuva se u Redisu pod ključem market:test_mode).",
+        "summary": "ToggleMarketTestMode — Admin/Employee only. Uključuje ili isključuje\nbypass radnog vremena berzi (čuva se u Redisu pod ključem market:test_mode).",
         "operationId": "BankaService_ToggleMarketTestMode",
         "responses": {
           "200": {
@@ -934,7 +934,7 @@
     },
     "/bank/employee/accounts": {
       "get": {
-        "summary": "GetAllAccounts — Employee only. Vraća agregiranu listu svih računa klijenata,\r\nsortiranu abecedno po prezimenu vlasnika. Podržava filtere po broju računa,\r\nimenu i prezimenu vlasnika (prosleđuju se kao query parametri).",
+        "summary": "GetAllAccounts — Employee only. Vraća agregiranu listu svih računa klijenata,\nsortiranu abecedno po prezimenu vlasnika. Podržava filtere po broju računa,\nimenu i prezimenu vlasnika (prosleđuju se kao query parametri).",
         "operationId": "BankaService_GetAllAccounts",
         "responses": {
           "200": {
@@ -980,7 +980,7 @@
     },
     "/bank/employee/accounts/{brojRacuna}/cards": {
       "get": {
-        "summary": "GetAccountCards — Employee only. Vraća sve kartice vezane za dati račun.\r\nIme, prezime i email vlasnika dohvataju se sinhronim pozivom ka user-service-u.",
+        "summary": "GetAccountCards — Employee only. Vraća sve kartice vezane za dati račun.\nIme, prezime i email vlasnika dohvataju se sinhronim pozivom ka user-service-u.",
         "operationId": "BankaService_GetAccountCards",
         "responses": {
           "200": {
@@ -1011,7 +1011,7 @@
     },
     "/bank/employee/cards/{cardNumber}/status": {
       "patch": {
-        "summary": "EmployeeChangeCardStatus — Employee only. Menja status kartice (blokada/deblokada/deaktivacija).\r\nNakon uspešne promene šalje asinhronu email notifikaciju vlasniku, a za poslovne račune\r\ni ovlašćenom licu (email se čita iz lokalne baze, bez dodatnog poziva ka user-service-u).",
+        "summary": "EmployeeChangeCardStatus — Employee only. Menja status kartice (blokada/deblokada/deaktivacija).\nNakon uspešne promene šalje asinhronu email notifikaciju vlasniku, a za poslovne račune\ni ovlašćenom licu (email se čita iz lokalne baze, bez dodatnog poziva ka user-service-u).",
         "operationId": "BankaService_EmployeeChangeCardStatus",
         "responses": {
           "200": {
@@ -1052,7 +1052,7 @@
     },
     "/bank/exchanges": {
       "get": {
-        "summary": "ListExchanges — javna metoda. Vraća listu berzi sa opcionim filterima.\r\nFilteri: polity (tačno poklapanje), search (parcijalni match na name/acronym).",
+        "summary": "ListExchanges — javna metoda. Vraća listu berzi sa opcionim filterima.\nFilteri: polity (tačno poklapanje), search (parcijalni match na name/acronym).",
         "operationId": "BankaService_ListExchanges",
         "responses": {
           "200": {
@@ -1091,7 +1091,7 @@
     },
     "/bank/exchanges/mic/{micCode}": {
       "get": {
-        "summary": "GetExchange — javna metoda. Dohvata jednu berzu po ID-u ili MIC kodu.\r\nProsleđuje se ili id (path param) ili mic_code (query param) — ne oba.",
+        "summary": "GetExchange — javna metoda. Dohvata jednu berzu po ID-u ili MIC kodu.\nProsleđuje se ili id (path param) ili mic_code (query param) — ne oba.",
         "operationId": "BankaService_GetExchange2",
         "responses": {
           "200": {
@@ -1131,7 +1131,7 @@
     },
     "/bank/exchanges/{id}": {
       "get": {
-        "summary": "GetExchange — javna metoda. Dohvata jednu berzu po ID-u ili MIC kodu.\r\nProsleđuje se ili id (path param) ili mic_code (query param) — ne oba.",
+        "summary": "GetExchange — javna metoda. Dohvata jednu berzu po ID-u ili MIC kodu.\nProsleđuje se ili id (path param) ili mic_code (query param) — ne oba.",
         "operationId": "BankaService_GetExchange",
         "responses": {
           "200": {
@@ -1393,9 +1393,226 @@
         ]
       }
     },
+    "/bank/trading/calculate": {
+      "post": {
+        "summary": "TradingCalculate — Authenticated. Vraća procenu cene i provizije bez perzistencije.",
+        "operationId": "BankaService_TradingCalculate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingCalculateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "TradingCalculateRequest — ulazni parametri za procenu cene i provizije.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1TradingCalculateRequest"
+            }
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      }
+    },
+    "/bank/trading/orders": {
+      "get": {
+        "summary": "TradingListOrders — Employee only. Lista naloga sa opcionim filterom statusa.",
+        "operationId": "BankaService_TradingListOrders",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingListOrdersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      },
+      "post": {
+        "summary": "TradingCreateOrder — Authenticated. Kreira novi nalog; workflow odobravanja je u servisu.",
+        "operationId": "BankaService_TradingCreateOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingCreateOrderResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "TradingCreateOrderRequest — sve potrebno za kreiranje naloga.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1TradingCreateOrderRequest"
+            }
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      }
+    },
+    "/bank/trading/orders/{orderId}/approve": {
+      "post": {
+        "summary": "TradingApproveOrder — Employee only. Odobrava PENDING nalog.",
+        "operationId": "BankaService_TradingApproveOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingApproveOrderResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BankaServiceTradingApproveOrderBody"
+            }
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      }
+    },
+    "/bank/trading/orders/{orderId}/cancel": {
+      "post": {
+        "summary": "TradingCancelOrder — Vlasnik naloga ili Employee. Otkazuje aktivan nalog.",
+        "operationId": "BankaService_TradingCancelOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingCancelOrderResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BankaServiceTradingCancelOrderBody"
+            }
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      }
+    },
+    "/bank/trading/orders/{orderId}/decline": {
+      "post": {
+        "summary": "TradingDeclineOrder — Employee only. Odbija PENDING nalog.",
+        "operationId": "BankaService_TradingDeclineOrder",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1TradingDeclineOrderResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "int64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BankaServiceTradingDeclineOrderBody"
+            }
+          }
+        ],
+        "tags": [
+          "BankaService"
+        ]
+      }
+    },
     "/bank/transactions/pending": {
       "get": {
-        "summary": "GetPendingActions — Client only. Vraća pending akcije za mobilni.\r\nMORA biti registrovana POSLE GetPendingAction jer grpc-gateway v2 prepend-uje handlere\r\n(poslje registrovani imaju prioritet). Statička ruta /pending mora pobediti {id}.",
+        "summary": "GetPendingActions — Client only. Vraća pending akcije za mobilni.\nMORA biti registrovana POSLE GetPendingAction jer grpc-gateway v2 prepend-uje handlere\n(poslje registrovani imaju prioritet). Statička ruta /pending mora pobediti {id}.",
         "operationId": "BankaService_GetPendingActions",
         "responses": {
           "200": {
@@ -1504,7 +1721,7 @@
           "title": "\"AKTIVNA\" | \"BLOKIRANA\" | \"DEAKTIVIRANA\""
         }
       },
-      "description": "EmployeeChangeCardStatusRequest — promena statusa kartice od strane zaposlenog.\r\nDozvoljene akcije: AKTIVNA→BLOKIRANA, BLOKIRANA→AKTIVNA, */→DEAKTIVIRANA."
+      "description": "EmployeeChangeCardStatusRequest — promena statusa kartice od strane zaposlenog.\nDozvoljene akcije: AKTIVNA→BLOKIRANA, BLOKIRANA→AKTIVNA, */→DEAKTIVIRANA."
     },
     "BankaServiceRejectCreditBody": {
       "type": "object"
@@ -1516,6 +1733,15 @@
           "type": "string"
         }
       }
+    },
+    "BankaServiceTradingApproveOrderBody": {
+      "type": "object"
+    },
+    "BankaServiceTradingCancelOrderBody": {
+      "type": "object"
+    },
+    "BankaServiceTradingDeclineOrderBody": {
+      "type": "object"
     },
     "BankaServiceUpdateAccountLimitBody": {
       "type": "object",
@@ -2177,7 +2403,7 @@
           "type": "string"
         }
       },
-      "description": "EmployeeAccountListItem je projekcija računa za zaposlene — sadrži podatke iz\r\nbank-service baze i ime/prezime vlasnika dohvaćeno sinhronim pozivom ka user-service-u."
+      "description": "EmployeeAccountListItem je projekcija računa za zaposlene — sadrži podatke iz\nbank-service baze i ime/prezime vlasnika dohvaćeno sinhronim pozivom ka user-service-u."
     },
     "v1EmployeeKarticaListItem": {
       "type": "object",
@@ -2203,7 +2429,7 @@
           "type": "string"
         }
       },
-      "description": "EmployeeKarticaListItem je projekcija kartice za portal zaposlenih.\r\nVlasnik je vlasnik računa (ne ovlašćeno lice), dohvaćen iz user-service-a."
+      "description": "EmployeeKarticaListItem je projekcija kartice za portal zaposlenih.\nVlasnik je vlasnik računa (ne ovlašćeno lice), dohvaćen iz user-service-a."
     },
     "v1Exchange": {
       "type": "object",
@@ -2637,7 +2863,7 @@
         "CLOSED"
       ],
       "default": "MARKET_STATUS_UNSPECIFIED",
-      "description": "MarketStatus opisuje trenutni status berze.\r\nVrednosti se računaju u servisnom sloju na osnovu lokalnog vremena berze.\n\n - OPEN: 09:30–16:00 lokalno\n - PRE_MARKET: 07:00–09:30 lokalno\n - AFTER_HOURS: 16:00–20:00 lokalno\n - CLOSED: van radnog vremena ili praznik/vikend"
+      "description": "MarketStatus opisuje trenutni status berze.\nVrednosti se računaju u servisnom sloju na osnovu lokalnog vremena berze.\n\n - OPEN: 09:30–16:00 lokalno\n - PRE_MARKET: 07:00–09:30 lokalno\n - AFTER_HOURS: 16:00–20:00 lokalno\n - CLOSED: van radnog vremena ili praznik/vikend"
     },
     "v1PaymentIntentItem": {
       "type": "object",
@@ -2777,7 +3003,7 @@
           "title": "\"PENDING\""
         }
       },
-      "description": "PendingActionItem — projekcija za mobilni prikaz.\r\nPolja su nazvana tako da odgovaraju postojećim DTO-ovima u mobilnoj aplikaciji."
+      "description": "PendingActionItem — projekcija za mobilni prikaz.\nPolja su nazvana tako da odgovaraju postojećim DTO-ovima u mobilnoj aplikaciji."
     },
     "v1ToggleMarketTestModeRequest": {
       "type": "object",
@@ -2787,6 +3013,233 @@
           "title": "true = uključi bypass radnog vremena, false = isključi"
         }
       }
+    },
+    "v1TradingApproveOrderResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "$ref": "#/definitions/v1TradingOrder"
+        }
+      }
+    },
+    "v1TradingCalculateRequest": {
+      "type": "object",
+      "properties": {
+        "orderType": {
+          "type": "string",
+          "title": "MARKET | LIMIT | STOP | STOP_LIMIT"
+        },
+        "direction": {
+          "type": "string",
+          "title": "BUY | SELL"
+        },
+        "listingId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "quantity": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "contractSize": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "pricePerUnit": {
+          "type": "string",
+          "title": "obavezno za LIMIT i STOP_LIMIT"
+        },
+        "stopPrice": {
+          "type": "string",
+          "title": "obavezno za STOP i STOP_LIMIT"
+        },
+        "margin": {
+          "type": "boolean"
+        },
+        "allOrNone": {
+          "type": "boolean"
+        }
+      },
+      "description": "TradingCalculateRequest — ulazni parametri za procenu cene i provizije."
+    },
+    "v1TradingCalculateResponse": {
+      "type": "object",
+      "properties": {
+        "pricePerUnit": {
+          "type": "string"
+        },
+        "approximatePrice": {
+          "type": "string"
+        },
+        "commission": {
+          "type": "string"
+        },
+        "initialMarginCost": {
+          "type": "string",
+          "title": "samo kada je margin=true"
+        }
+      },
+      "description": "TradingCalculateResponse — procenjena cena, provizija i (opciono) inicijalna marža."
+    },
+    "v1TradingCancelOrderResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "$ref": "#/definitions/v1TradingOrder"
+        }
+      }
+    },
+    "v1TradingCreateOrderRequest": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "listingId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "orderType": {
+          "type": "string",
+          "title": "MARKET | LIMIT | STOP | STOP_LIMIT"
+        },
+        "direction": {
+          "type": "string",
+          "title": "BUY | SELL"
+        },
+        "quantity": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "contractSize": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "pricePerUnit": {
+          "type": "string"
+        },
+        "stopPrice": {
+          "type": "string"
+        },
+        "afterHours": {
+          "type": "boolean"
+        },
+        "allOrNone": {
+          "type": "boolean"
+        },
+        "margin": {
+          "type": "boolean"
+        }
+      },
+      "description": "TradingCreateOrderRequest — sve potrebno za kreiranje naloga."
+    },
+    "v1TradingCreateOrderResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "$ref": "#/definitions/v1TradingOrder"
+        }
+      }
+    },
+    "v1TradingDeclineOrderResponse": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "$ref": "#/definitions/v1TradingOrder"
+        }
+      }
+    },
+    "v1TradingListOrdersResponse": {
+      "type": "object",
+      "properties": {
+        "orders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1TradingOrder"
+          }
+        }
+      }
+    },
+    "v1TradingOrder": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "int64"
+        },
+        "userId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "accountId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "listingId": {
+          "type": "string",
+          "format": "int64"
+        },
+        "orderType": {
+          "type": "string",
+          "title": "MARKET | LIMIT | STOP | STOP_LIMIT"
+        },
+        "direction": {
+          "type": "string",
+          "title": "BUY | SELL"
+        },
+        "quantity": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "contractSize": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "pricePerUnit": {
+          "type": "string",
+          "title": "nil za MARKET naloge"
+        },
+        "stopPrice": {
+          "type": "string",
+          "title": "nil za MARKET i LIMIT naloge"
+        },
+        "status": {
+          "type": "string",
+          "title": "PENDING | APPROVED | DECLINED | DONE | CANCELED"
+        },
+        "approvedBy": {
+          "type": "string",
+          "format": "int64",
+          "title": "nil dok nije pregledano"
+        },
+        "isDone": {
+          "type": "boolean"
+        },
+        "remainingPortions": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "afterHours": {
+          "type": "boolean"
+        },
+        "allOrNone": {
+          "type": "boolean"
+        },
+        "margin": {
+          "type": "boolean"
+        },
+        "lastModified": {
+          "type": "string",
+          "title": "ISO 8601"
+        },
+        "createdAt": {
+          "type": "string",
+          "title": "ISO 8601"
+        }
+      },
+      "description": "TradingOrder predstavlja jedan nalog za hartiju od vrednosti."
     },
     "v1Transakcija": {
       "type": "object",
