@@ -116,6 +116,9 @@ services:
       - WORKER_INTERVAL_HOURS=24
       - RETRY_AFTER_HOURS=72
       - LATE_PAYMENT_PENALTY_PCT=0.05
+      - EODHD_API_KEY=${EODHD_API_KEY}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - ALPHAVANTAGE_API_KEY=${ALPHAVANTAGE_API_KEY}
     ports:
       - "8083:8080"   # host 8083 → container 8080
       - "50053:50051" # host 50053 → container 50051

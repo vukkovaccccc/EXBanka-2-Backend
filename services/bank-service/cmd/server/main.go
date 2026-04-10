@@ -131,7 +131,8 @@ func main() {
 	berzaService := service.NewBerzaService(berzaRepo, marketModeStore)
 
 	listingRepo := repository.NewListingRepository(db)
-	listingService := service.NewListingService(listingRepo)
+	listingHTTP := &http.Client{Timeout: 28 * time.Second}
+	listingService := service.NewListingService(listingRepo, listingHTTP, cfg.EODHDAPIKey)
 
 	// ── InstallmentWorker (cron job za automatsku naplatu rata) ───────────────
 	var notifPublisher worker.NotificationPublisher
@@ -195,7 +196,7 @@ func main() {
 	klientKarticeHandler := handler.NewKlientKarticeHandler(karticaService, cfg.JWTAccessSecret)
 
 	portfolioHandler := handler.NewPortfolioHandler(db, listingService, cfg.JWTAccessSecret)
-	taxHandler := handler.NewTaxHandler(db, exchangeService, cfg.JWTAccessSecret)
+	taxHandler := handler.NewTaxHandler(db, exchangeService, userClient, cfg.JWTAccessSecret, cfg.StateRevenueAccountID)
 	myOrdersHandler := handler.NewMyOrdersHandler(tradingService, cfg.JWTAccessSecret)
 	fundHandler := handler.NewFundHandler(db, exchangeService, cfg.JWTAccessSecret)
 
@@ -287,14 +288,22 @@ func main() {
 	// ── 7e. Start TradingEngine (async order execution + fund settlement) ─────
 	go tradingEngine.Start(ctx)
 
+	// ── 7e2. Daily-ish scan: PENDING futures orders past settlement → DECLINED ─
+	futuresExpiryWorker := worker.NewFuturesPendingExpiryWorker(orderRepo, listingRepo)
+	go futuresExpiryWorker.Start(ctx)
+
 	// ── 7c. Start ListingRefresherWorker (osvežava cene hartija periodično) ────
 	listingRefreshInterval := time.Duration(cfg.ListingRefreshIntervalMinutes) * time.Minute
-	listingRefresherWorker := worker.NewListingRefresherWorker(listingRepo, listingRefreshInterval, cfg.FinnhubAPIKey, cfg.AlphaVantageAPIKey)
+	listingRefresherWorker := worker.NewListingRefresherWorker(listingRepo, listingRefreshInterval, cfg.EODHDAPIKey, cfg.FinnhubAPIKey, cfg.AlphaVantageAPIKey, cfg.ListingRequireLiveQuotes)
 	go listingRefresherWorker.Start(ctx)
 
 	// ── 7d. Start DailyLimitResetWorker (resetuje used_limit agenata u 23:59) ─
 	dailyLimitResetWorker := worker.NewDailyLimitResetWorker(actuaryService)
 	go dailyLimitResetWorker.Start(ctx)
+
+	// ── 7f. Start MonthlyTaxWorker (obračunava porez na kapitalnu dobit 1. u mesecu) ─
+	monthlyTaxWorker := worker.NewMonthlyTaxWorker(db, exchangeService)
+	go monthlyTaxWorker.Start(ctx)
 
 	// ── 7b. Start ActuaryConsumer (RabbitMQ event listener) ──────────────────
 	// Listens on the user_created queue and auto-provisions actuary profiles

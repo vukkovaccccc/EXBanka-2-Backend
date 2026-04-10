@@ -22,6 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o microservice ./${
 # Produkcijski kontejner
 FROM alpine:latest
 
+# Samo ca-certificates + tzdata (bez dodatnih paketa — manje tačaka otkaza pri apk/DNS tokom builda).
 RUN apk --no-cache add ca-certificates tzdata
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 

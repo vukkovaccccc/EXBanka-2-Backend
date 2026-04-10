@@ -86,7 +86,11 @@ func (s *berzaService) GetMarketStatus(ctx context.Context, ex domain.Exchange) 
 	}
 
 	// 5. Radno vreme po satu i minutima
-	// OpenTime i CloseTime dolaze iz baze (TIME kolona); koristimo samo sat i minut.
+	// OpenTime i CloseTime dolaze iz baze kao TIME kolone koje predstavljaju
+	// lokalno radno vreme berze (npr. 09:30 za NYSE znači 09:30 ET).
+	// `now` je već konvertovan u lokalnu zonu berze (In(loc) gore), pa
+	// koristimo Hour()/Minute() direktno — BEZ .UTC() — kako bi poređenje
+	// bilo u istoj vremenskoj zoni.
 	h, m := now.Hour(), now.Minute()
 	totalMin := h*60 + m
 
@@ -94,8 +98,8 @@ func (s *berzaService) GetMarketStatus(ctx context.Context, ex domain.Exchange) 
 		preMarketStart = 7*60 + 0  // 07:00 — fiksno
 		afterHoursEnd  = 20*60 + 0 // 20:00 — fiksno
 	)
-	openStart := ex.OpenTime.UTC().Hour()*60 + ex.OpenTime.UTC().Minute()
-	closeEnd  := ex.CloseTime.UTC().Hour()*60 + ex.CloseTime.UTC().Minute()
+	openStart := ex.OpenTime.Hour()*60 + ex.OpenTime.Minute()
+	closeEnd  := ex.CloseTime.Hour()*60 + ex.CloseTime.Minute()
 
 	switch {
 	case totalMin >= openStart && totalMin < closeEnd:

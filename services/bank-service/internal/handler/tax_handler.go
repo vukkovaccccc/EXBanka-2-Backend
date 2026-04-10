@@ -13,6 +13,8 @@ package handler
 //   - Deducted from the same account used for the sell order
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 
 	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	"banka-backend/services/bank-service/internal/transport"
 
 	"gorm.io/gorm"
 )
@@ -28,21 +31,29 @@ const taxRate = 0.15
 
 // TaxHandler serves all /bank/tax/* endpoints.
 type TaxHandler struct {
-	db              *gorm.DB
-	exchangeService domain.ExchangeService
-	jwtSecret       string
+	db                   *gorm.DB
+	exchangeService      domain.ExchangeService
+	userClient           *transport.UserServiceClient // nil-safe: name enrichment is best-effort
+	jwtSecret            string
+	stateRevenueAccountID int64 // 0 = ne knjižiti prijem na državni račun
 }
 
 // NewTaxHandler constructs the handler with its dependencies.
+// userClient is optional (pass nil to disable name enrichment and filtering).
+// stateRevenueAccountID: core_banking.racun.id (RSD) za simulaciju prijema poreza od strane „države kao firme”.
 func NewTaxHandler(
 	db *gorm.DB,
 	exchangeService domain.ExchangeService,
+	userClient *transport.UserServiceClient,
 	jwtSecret string,
+	stateRevenueAccountID int64,
 ) *TaxHandler {
 	return &TaxHandler{
-		db:              db,
-		exchangeService: exchangeService,
-		jwtSecret:       jwtSecret,
+		db:                   db,
+		exchangeService:      exchangeService,
+		userClient:           userClient,
+		jwtSecret:            jwtSecret,
+		stateRevenueAccountID: stateRevenueAccountID,
 	}
 }
 
@@ -70,7 +81,9 @@ func (h *TaxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type taxUserRecord struct {
 	UserID    string  `json:"userId"`
 	UserType  string  `json:"userType"` // "CLIENT" | "ACTUARY"
-	TaxDebt   float64 `json:"taxDebt"`   // RSD
+	FirstName string  `json:"firstName"`
+	LastName  string  `json:"lastName"`
+	TaxDebt   float64 `json:"taxDebt"` // RSD
 }
 
 type taxUsersResponse struct {
@@ -159,16 +172,48 @@ func (h *TaxHandler) listUsers(w http.ResponseWriter, r *http.Request, _ *auth.A
 		actuarySet[a.EmployeeID] = true
 	}
 
+	// Optional name filters from query params
+	firstNameFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("firstName")))
+	lastNameFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("lastName")))
+
+	// Enrich with user names via user-service (best-effort).
+	// If userClient is not configured, names are left empty and name filter is skipped.
+	type nameEntry struct{ first, last string }
+	nameCache := make(map[int64]nameEntry, len(debtMap))
+	if h.userClient != nil {
+		for uid := range debtMap {
+			info, nameErr := h.userClient.GetClientInfo(context.Background(), uid)
+			if nameErr == nil && info != nil {
+				nameCache[uid] = nameEntry{
+					first: info.FirstName,
+					last:  info.LastName,
+				}
+			}
+		}
+	}
+
 	result := make([]taxUserRecord, 0, len(debtMap))
 	for uid, debt := range debtMap {
+		entry := nameCache[uid]
+
+		// Apply name filter if provided
+		if firstNameFilter != "" && !strings.Contains(strings.ToLower(entry.first), firstNameFilter) {
+			continue
+		}
+		if lastNameFilter != "" && !strings.Contains(strings.ToLower(entry.last), lastNameFilter) {
+			continue
+		}
+
 		ut := "CLIENT"
 		if actuarySet[uid] {
 			ut = "ACTUARY"
 		}
 		result = append(result, taxUserRecord{
-			UserID:   strconv.FormatInt(uid, 10),
-			UserType: ut,
-			TaxDebt:  debt,
+			UserID:    strconv.FormatInt(uid, 10),
+			UserType:  ut,
+			FirstName: entry.first,
+			LastName:  entry.last,
+			TaxDebt:   debt,
 		})
 	}
 
@@ -256,7 +301,7 @@ func (h *TaxHandler) calculateAndCollect(w http.ResponseWriter, r *http.Request,
 		var accCurrency string
 		h.db.WithContext(ctx).Raw(`
 			SELECT v.oznaka FROM core_banking.racun r
-			JOIN core_banking.valuta v ON v.id = r.valuta_id
+			JOIN core_banking.valuta v ON v.id = r.id_valute
 			WHERE r.id = ?
 		`, row.AccountID).Scan(&accCurrency)
 
@@ -281,11 +326,27 @@ func (h *TaxHandler) calculateAndCollect(w http.ResponseWriter, r *http.Request,
 			continue
 		}
 
-		// Record transaction
+		// Record transaction (korisnik)
 		h.db.WithContext(ctx).Exec(`
 			INSERT INTO core_banking.transakcija (racun_id, tip_transakcije, iznos, opis, vreme_izvrsavanja, status)
 			VALUES (?, 'ISPLATA', ?, 'Porez na kapitalnu dobit', NOW(), 'IZVRSEN')
 		`, row.AccountID, deductionInAccCurrency)
+
+		// Država kao firma: prijem na poseban tekući RSD račun (isti iznos u RSD kao obračun).
+		if h.stateRevenueAccountID > 0 && taxRSD > 0 {
+			if err := h.db.WithContext(ctx).Exec(`
+				UPDATE core_banking.racun
+				SET stanje_racuna = stanje_racuna + ?
+				WHERE id = ?
+			`, taxRSD, h.stateRevenueAccountID).Error; err != nil {
+				log.Printf("[tax] knjiženje na državni račun id=%d: %v", h.stateRevenueAccountID, err)
+			} else if err2 := h.db.WithContext(ctx).Exec(`
+				INSERT INTO core_banking.transakcija (racun_id, tip_transakcije, iznos, opis, vreme_izvrsavanja, status)
+				VALUES (?, 'UPLATA', ?, 'Porez na kapitalnu dobit (prijem državnog računa)', NOW(), 'IZVRSEN')
+			`, h.stateRevenueAccountID, taxRSD).Error; err2 != nil {
+				log.Printf("[tax] transakcija prijema poreza države: %v", err2)
+			}
+		}
 
 		// Upsert tax_record (mark as paid)
 		h.db.WithContext(ctx).Exec(`

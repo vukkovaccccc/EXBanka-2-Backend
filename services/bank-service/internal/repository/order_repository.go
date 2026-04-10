@@ -26,12 +26,13 @@ type orderModel struct {
 	PricePerUnit      *string  `gorm:"column:price_per_unit"`
 	StopPrice         *string  `gorm:"column:stop_price"`
 	Status            string   `gorm:"column:status"`
-	ApprovedBy        *int64   `gorm:"column:approved_by"`
+	ApprovedBy        *string  `gorm:"column:approved_by"`
 	IsDone            bool     `gorm:"column:is_done"`
 	RemainingPortions int32    `gorm:"column:remaining_portions"`
 	AfterHours        bool     `gorm:"column:after_hours"`
 	AllOrNone         bool     `gorm:"column:all_or_none"`
 	Margin            bool     `gorm:"column:margin"`
+	IsClient          bool     `gorm:"column:is_client"`
 	LastModified      time.Time `gorm:"column:last_modified"`
 	CreatedAt         time.Time `gorm:"column:created_at"`
 }
@@ -55,6 +56,7 @@ func (m orderModel) toDomain() trading.Order {
 		AfterHours:        m.AfterHours,
 		AllOrNone:         m.AllOrNone,
 		Margin:            m.Margin,
+		IsClient:          m.IsClient,
 		LastModified:      m.LastModified,
 		CreatedAt:         m.CreatedAt,
 	}
@@ -133,7 +135,12 @@ func (r *orderRepository) Create(ctx context.Context, req trading.CreateOrderReq
 		AfterHours:        req.AfterHours,
 		AllOrNone:         req.AllOrNone,
 		Margin:            req.Margin,
+		IsClient:          req.IsClient,
 		LastModified:      now,
+	}
+	if status == trading.OrderStatusApproved {
+		s := trading.ApprovedByNoApproval
+		m.ApprovedBy = &s
 	}
 	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return nil, fmt.Errorf("order create: %w", err)
@@ -157,7 +164,7 @@ func (r *orderRepository) GetByID(ctx context.Context, id int64) (*trading.Order
 }
 
 // UpdateStatus atomično menja status i opcionog odobravaoca naloga.
-func (r *orderRepository) UpdateStatus(ctx context.Context, id int64, status trading.OrderStatus, approvedBy *int64) (*trading.Order, error) {
+func (r *orderRepository) UpdateStatus(ctx context.Context, id int64, status trading.OrderStatus, approvedBy *string) (*trading.Order, error) {
 	updates := map[string]interface{}{
 		"status":        string(status),
 		"last_modified": gorm.Expr("NOW()"),
@@ -307,6 +314,38 @@ func (r *orderRepository) Cancel(ctx context.Context, id int64) (*trading.Order,
 		return nil, trading.ErrOrderNotFound
 	}
 	return r.GetByID(ctx, id)
+}
+
+// GetNetHoldings returns the effective quantity of a listing that a user owns
+// and has not yet committed to sell (via PENDING or APPROVED SELL orders).
+//
+// Formula:
+//
+//	net = Σ(DONE BUY * qty) − Σ(DONE SELL * qty) − Σ(PENDING|APPROVED SELL * qty, !is_done)
+//
+// A result of 0 means the user owns nothing (or every owned share is already
+// earmarked for an active SELL order). Returns 0 on any DB error (conservative).
+func (r *orderRepository) GetNetHoldings(ctx context.Context, userID, listingID int64) (int64, error) {
+	var net int64
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT COALESCE(SUM(
+			CASE
+				WHEN direction = 'BUY'  AND status = 'DONE'
+					THEN quantity * contract_size
+				WHEN direction = 'SELL' AND status = 'DONE'
+					THEN -(quantity * contract_size)
+				WHEN direction = 'SELL' AND status IN ('PENDING','APPROVED') AND is_done = FALSE
+					THEN -(quantity * contract_size)
+				ELSE 0
+			END
+		), 0)
+		FROM core_banking.orders
+		WHERE user_id = ? AND listing_id = ?
+	`, userID, listingID).Scan(&net).Error
+	if err != nil {
+		return 0, fmt.Errorf("get net holdings (user=%d listing=%d): %w", userID, listingID, err)
+	}
+	return net, nil
 }
 
 // ─── Helper ───────────────────────────────────────────────────────────────────

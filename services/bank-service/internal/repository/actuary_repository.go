@@ -221,3 +221,23 @@ func (r *actuaryRepository) IncrementUsedLimitIfWithin(ctx context.Context, empl
 	return a, nil
 }
 
+// InsertActuaryLimitAudit upisuje audit zapis u core_banking.actuary_limit_audit.
+func (r *actuaryRepository) InsertActuaryLimitAudit(
+	ctx context.Context,
+	actorEmployeeID, targetEmployeeID int64,
+	oldLimit, newLimit decimal.Decimal,
+) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO core_banking.actuary_limit_audit (
+			actor_employee_id,
+			target_employee_id,
+			old_limit,
+			new_limit
+		) VALUES ($1, $2, $3::numeric, $4::numeric)
+	`, actorEmployeeID, targetEmployeeID, oldLimit.StringFixed(2), newLimit.StringFixed(2))
+	if err != nil {
+		return fmt.Errorf("insert actuary limit audit: %w", err)
+	}
+	return nil
+}
+

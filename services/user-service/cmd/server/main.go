@@ -128,9 +128,12 @@ func main() {
 		log.Fatalf("[gateway] register handler client: %v", err)
 	}
 
+	// Obmotaj gateway mux sa custom handlerom za /client/{id}/trade-permission
+	permHandler := userhandler.NewClientPermissionHandler(sqlDB, cfg.JWTAccessSecret)
+
 	gatewaySrv := &http.Server{
 		Addr:         cfg.HTTPAddr,
-		Handler:      mux,
+		Handler:      permHandler.WrapMux(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

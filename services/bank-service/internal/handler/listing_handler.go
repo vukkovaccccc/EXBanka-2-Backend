@@ -3,15 +3,21 @@ package handler
 import (
 	"context"
 	"errors"
+	"regexp"
 	"time"
 
 	pb "banka-backend/proto/banka"
 	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	"banka-backend/services/bank-service/internal/worker"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// pureTickerRE matches a string composed entirely of uppercase letters, digits, '/', 'C', and 'P'
+// as they appear in ticker symbols — used to decide whether a search term should be ticker-validated.
+var pureTickerRE = regexp.MustCompile(`^[A-Z0-9/]+$`)
 
 // GetListings vraća paginisanu listu hartija od vrednosti sa filterima.
 // Mapped to: GET /bank/listings
@@ -63,6 +69,15 @@ func (h *BankHandler) GetListings(ctx context.Context, req *pb.GetListingsReques
 		filter.AllowedListingTypes = []string{
 			string(domain.ListingTypeStock),
 			string(domain.ListingTypeFuture),
+		}
+	}
+
+	// If the search term looks like a pure ticker (all-caps/digits/slash) and a specific
+	// listing type is requested, reject searches that don't match the expected ticker format.
+	if search := filter.Search; search != "" && filter.ListingType != "" && pureTickerRE.MatchString(search) {
+		if !worker.ValidateTickerFormat(filter.ListingType, search) {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"neispravan format tickera %q za tip %s", search, filter.ListingType)
 		}
 	}
 
@@ -139,7 +154,8 @@ func (h *BankHandler) GetListingHistory(ctx context.Context, req *pb.GetListingH
 	items := make([]*pb.ListingHistoryItem, 0, len(history))
 	for _, h := range history {
 		items = append(items, &pb.ListingHistoryItem{
-			Date:        h.Date.Format("2006-01-02"),
+			// RFC3339 omogućava intradnevne tačke (5m, 1h); dnevni zapisi ostaju u 00:00 UTC.
+			Date:        h.Date.UTC().Format(time.RFC3339),
 			Price:       h.Price,
 			AskHigh:     h.AskHigh,
 			BidLow:      h.BidLow,

@@ -17,49 +17,71 @@ import (
 
 // ListingRefresherWorker periodično osvežava cene hartija od vrednosti.
 //
-// Podržani tipovi i izvori podataka:
-//   - STOCK:  Finnhub Quote (cena) + AlphaVantage Company Overview (detalji, jednom dnevno)
-//   - FOREX:  AlphaVantage Currency Exchange Rate (primarni) + Finnhub (fallback)
-//   - FUTURE: Random walk na osnovu poslednje cene + mapa contract size-ova
-//   - OPTION: Yahoo Finance opcijski lanac (bez API ključa)
+// Podržani tipovi i hijerarhija izvora:
+//   - STOCK:  EODHD real-time (primarni) → Finnhub Quote → (opciono sintetika ako LISTING_REQUIRE_LIVE_QUOTES=false)
+//             AlphaVantage Company Overview jednom dnevno (detalji)
+//             EODHD EOD istorija za seed → Finnhub Candles (fallback)
+//   - FOREX:  EODHD real-time (primarni) → AlphaVantage → Finnhub → (sintetika samo ako requireLive=false)
+//   - FUTURE: EODHD real-time commodity (primarni) → (random walk samo ako requireLive=false)
+//   - OPTION: Yahoo Finance opcijski lanac (EODHD options su paid addon)
 type ListingRefresherWorker struct {
 	repo        domain.ListingRepository
 	interval    time.Duration
+	eodhd       *eodhdClient        // nil ako nema ključa
 	finnhub     *finnhubClient      // nil ako nema ključa
 	av          *alphaVantageClient // nil ako nema ključa
 	httpClient  *http.Client        // deljeni klijent za Yahoo Finance
 	avLastDaily map[int64]time.Time // throttle: AV Company Overview jednom dnevno
+	// requireLiveQuotes: ako true (podrazumevano), bez mock/sintetike — preskoči ažuriranje ako API nema podatke.
+	requireLiveQuotes bool
 }
 
 func NewListingRefresherWorker(
 	repo domain.ListingRepository,
 	interval time.Duration,
+	eodhd_api_key string,
 	finnhubAPIKey string,
 	alphaVantageKey string,
+	requireLiveQuotes bool,
 ) *ListingRefresherWorker {
+	var ec *eodhdClient
+	if eodhd_api_key != "" {
+		ec = newEODHDClient(eodhd_api_key)
+		log.Printf("[worker] ListingRefresherWorker: EODHD API konfigurisan (primarni izvor)")
+	} else {
+		log.Printf("[worker] ListingRefresherWorker: EODHD_API_KEY nije postavljen — koristiće se Finnhub ili preskok (LISTING_REQUIRE_LIVE_QUOTES=true)")
+	}
+
 	var fc *finnhubClient
 	if finnhubAPIKey != "" {
 		fc = newFinnhubClient(finnhubAPIKey)
-		log.Printf("[worker] ListingRefresherWorker: Finnhub API konfigurisan")
+		log.Printf("[worker] ListingRefresherWorker: Finnhub API konfigurisan (sekundarni izvor)")
 	} else {
-		log.Printf("[worker] ListingRefresherWorker: FINNHUB_API_KEY nije postavljen — koriste se mock vrednosti za STOCK")
+		log.Printf("[worker] ListingRefresherWorker: FINNHUB_API_KEY nije postavljen")
 	}
 
 	var avc *alphaVantageClient
 	if alphaVantageKey != "" {
 		avc = newAlphaVantageClient(alphaVantageKey)
-		log.Printf("[worker] ListingRefresherWorker: AlphaVantage API konfigurisan")
+		log.Printf("[worker] ListingRefresherWorker: AlphaVantage API konfigurisan (Company Overview)")
 	} else {
 		log.Printf("[worker] ListingRefresherWorker: ALPHAVANTAGE_API_KEY nije postavljen — preskače se AV logika")
 	}
 
+	if requireLiveQuotes {
+		log.Printf("[worker] ListingRefresherWorker: LISTING_REQUIRE_LIVE_QUOTES — bez sintetičkih cena za sve tipove ako eksterni izvori padnu")
+	} else {
+		log.Printf("[worker] ListingRefresherWorker: LISTING_REQUIRE_LIVE_QUOTES=false — dozvoljena sintetika/mock pri padu API-ja (samo dev)")
+	}
 	return &ListingRefresherWorker{
-		repo:        repo,
-		interval:    interval,
-		finnhub:     fc,
-		av:          avc,
-		httpClient:  &http.Client{Timeout: 15 * time.Second},
-		avLastDaily: make(map[int64]time.Time),
+		repo:              repo,
+		interval:          interval,
+		eodhd:             ec,
+		finnhub:           fc,
+		av:                avc,
+		httpClient:        &http.Client{Timeout: 15 * time.Second},
+		avLastDaily:       make(map[int64]time.Time),
+		requireLiveQuotes: requireLiveQuotes,
 	}
 }
 
@@ -97,6 +119,12 @@ func (w *ListingRefresherWorker) run(ctx context.Context) {
 	refreshed := 0
 
 	for _, l := range listings {
+		// Validate ticker format before processing
+		if !ValidateTickerFormat(string(l.ListingType), l.Ticker) {
+			log.Printf("[worker] ListingRefresher: neispravan format tickera %q (tip=%s) — preskačem", l.Ticker, l.ListingType)
+			continue
+		}
+
 		switch l.ListingType {
 		case domain.ListingTypeStock:
 			w.refreshStock(ctx, l, now)
@@ -127,6 +155,10 @@ func (w *ListingRefresherWorker) refreshStock(ctx context.Context, l domain.List
 	}
 
 	price, ask, bid, volume, change := w.fetchStockPrice(ctx, l, now)
+	if price < 0 {
+		log.Printf("[worker] STOCK %s: preskočeno ažuriranje (nema live podataka, strict ili prazni ključevi)", l.Ticker)
+		return
+	}
 
 	// Jednom dnevno: dohvati Company Overview sa AlphaVantage
 	details := w.maybeUpdateStockDetails(ctx, l, now)
@@ -147,32 +179,58 @@ func (w *ListingRefresherWorker) refreshStock(ctx context.Context, l domain.List
 }
 
 func (w *ListingRefresherWorker) fetchStockPrice(ctx context.Context, l domain.Listing, now time.Time) (price, ask, bid float64, volume int64, change float64) {
-	if w.finnhub == nil {
-		return mockPrice(l)
+	// ── Primarni izvor: EODHD real-time ──────────────────────────────────────
+	if w.eodhd != nil {
+		q, err := w.eodhd.RealTimeQuote(ctx, eodhdStockSymbol(l.Ticker))
+		if err == nil && q.Close > 0 {
+			price = q.Close
+			change = q.Change
+			ask = q.Ask
+			bid = q.Bid
+			// Ako API ne vrati bid/ask, koristi mali spread
+			if ask <= 0 || bid <= 0 {
+				spread := price * 0.0005
+				ask = price + spread
+				bid = price - spread
+			}
+			if bid < 0 {
+				bid = 0
+			}
+			if q.Volume > 0 {
+				volume = q.Volume
+			} else {
+				volume = l.Volume
+			}
+			log.Printf("[worker] STOCK %s = $%.4f (Δ%.4f) vol=%d [EODHD]", l.Ticker, price, change, volume)
+			return price, ask, bid, volume, change
+		}
+		log.Printf("[worker] STOCK %s: EODHD greška: %v — pokušavam Finnhub", l.Ticker, err)
 	}
 
-	q, err := w.finnhub.Quote(ctx, l.Ticker)
-	if err != nil {
-		log.Printf("[worker] STOCK %s: Finnhub Quote greška: %v — koristim mock", l.Ticker, err)
-		return mockPrice(l)
-	}
-	if q.C == 0 {
-		log.Printf("[worker] STOCK %s: Finnhub nulta cena — koristim mock", l.Ticker)
-		return mockPrice(l)
+	// ── Sekundarni izvor: Finnhub ─────────────────────────────────────────────
+	if w.finnhub != nil {
+		q, err := w.finnhub.Quote(ctx, l.Ticker)
+		if err == nil && q.C > 0 {
+			price = q.C
+			change = q.D
+			spread := price * 0.0005
+			ask = price + spread
+			bid = price - spread
+			if bid < 0 {
+				bid = 0
+			}
+			volume = w.fetchTodayVolume(ctx, l.Ticker, now, l.Volume)
+			log.Printf("[worker] STOCK %s = $%.4f (Δ%.2f) vol=%d [Finnhub]", l.Ticker, price, q.Dp, volume)
+			return price, ask, bid, volume, change
+		}
+		log.Printf("[worker] STOCK %s: Finnhub greška: %v", l.Ticker, err)
 	}
 
-	price = q.C
-	change = q.D
-	spread := price * 0.0005
-	ask = price + spread
-	bid = price - spread
-	if bid < 0 {
-		bid = 0
+	if w.requireLiveQuotes {
+		log.Printf("[worker] STOCK %s: nema dostupnog live izvora — preskačem ažuriranje (REQUIRE_LIVE)", l.Ticker)
+		return -1, 0, 0, 0, 0
 	}
-	volume = w.fetchTodayVolume(ctx, l.Ticker, now, l.Volume)
-
-	log.Printf("[worker] STOCK %s = $%.4f (Δ%.2f) vol=%d", l.Ticker, price, q.Dp, volume)
-	return price, ask, bid, volume, change
+	return mockPrice(l)
 }
 
 // maybeUpdateStockDetails dohvata Company Overview jednom dnevno i vraća novi JSON (ili "").
@@ -223,6 +281,10 @@ func (w *ListingRefresherWorker) refreshForex(ctx context.Context, l domain.List
 	}
 
 	price, ask, bid, change := w.fetchForexPrice(ctx, l, base, quote)
+	if price <= 0 {
+		log.Printf("[worker] FOREX %s: preskočeno ažuriranje (nema live podataka)", l.Ticker)
+		return
+	}
 
 	// Osigurati da DetailsJSON sadrži valute i contract_size
 	details := w.ensureForexDetails(l.DetailsJSON, base, quote)
@@ -243,32 +305,54 @@ func (w *ListingRefresherWorker) refreshForex(ctx context.Context, l domain.List
 }
 
 func (w *ListingRefresherWorker) fetchForexPrice(ctx context.Context, l domain.Listing, base, quote string) (price, ask, bid, change float64) {
-	// Primarni: AlphaVantage Currency Exchange Rate
+	// ── Primarni izvor: EODHD real-time forex ────────────────────────────────
+	if w.eodhd != nil {
+		q, err := w.eodhd.RealTimeQuote(ctx, eodhdForexSymbol(l.Ticker))
+		if err == nil && q.Close > 0 {
+			change = q.Close - l.Price
+			ask = q.Ask
+			bid = q.Bid
+			if ask <= 0 || bid <= 0 {
+				spread := q.Close * 0.0005
+				ask = q.Close + spread
+				bid = q.Close - spread
+			}
+			log.Printf("[worker] FOREX %s = %.5f [EODHD]", l.Ticker, q.Close)
+			return q.Close, ask, bid, change
+		}
+		log.Printf("[worker] FOREX %s: EODHD greška: %v — pokušavam AV", l.Ticker, err)
+	}
+
+	// ── Sekundarni: AlphaVantage ─────────────────────────────────────────────
 	if w.av != nil {
 		rate, err := w.av.ForexRate(ctx, base, quote)
 		time.Sleep(500 * time.Millisecond)
 		if err == nil && rate.ExchangeRate > 0 {
 			change = rate.ExchangeRate - l.Price
-			log.Printf("[worker] FOREX %s = %.5f (AV)", l.Ticker, rate.ExchangeRate)
+			log.Printf("[worker] FOREX %s = %.5f [AV]", l.Ticker, rate.ExchangeRate)
 			return rate.ExchangeRate, rate.AskPrice, rate.BidPrice, change
 		}
-		log.Printf("[worker] FOREX %s: AV ForexRate greška — pokušavam Finnhub", l.Ticker)
+		log.Printf("[worker] FOREX %s: AV greška — pokušavam Finnhub", l.Ticker)
 	}
 
-	// Fallback: Finnhub (format OANDA:EUR_USD)
+	// ── Tercijarni: Finnhub (OANDA format) ───────────────────────────────────
 	if w.finnhub != nil {
 		symbol := "OANDA:" + base + "_" + quote
 		q, err := w.finnhub.Quote(ctx, symbol)
 		if err == nil && q.C > 0 {
 			spread := q.C * 0.0005
 			change = q.D
-			log.Printf("[worker] FOREX %s = %.5f (Finnhub)", l.Ticker, q.C)
+			log.Printf("[worker] FOREX %s = %.5f [Finnhub]", l.Ticker, q.C)
 			return q.C, q.C + spread, q.C - spread, change
 		}
-		log.Printf("[worker] FOREX %s: Finnhub greška — koristim mock", l.Ticker)
+		log.Printf("[worker] FOREX %s: Finnhub greška", l.Ticker)
 	}
 
-	// Mock fallback: ±0.5% random walk
+	if w.requireLiveQuotes {
+		log.Printf("[worker] FOREX %s: nema live podataka — preskačem ažuriranje (REQUIRE_LIVE)", l.Ticker)
+		return 0, 0, 0, 0
+	}
+	// Sintetički fallback samo kada LISTING_REQUIRE_LIVE_QUOTES=false (lokalni dev)
 	base2 := l.Price
 	if base2 == 0 {
 		base2 = 1.0
@@ -366,20 +450,54 @@ var futureMonthCodes = map[byte]time.Month{
 func (w *ListingRefresherWorker) refreshFuture(ctx context.Context, l domain.Listing, now time.Time) {
 	prefix, monthLetter, year2 := parseFutureTicker(l.Ticker)
 
-	// Random walk ±1%
-	base := l.Price
-	if base == 0 {
-		base = 100.0
+	// ── Primarni izvor: EODHD real-time commodity ────────────────────────────
+	var price, ask, bid, change float64
+	var volume int64
+
+	if w.eodhd != nil && prefix != "" {
+		commSymbol := eodhdCommoditySymbol(prefix)
+		q, err := w.eodhd.RealTimeQuote(ctx, commSymbol)
+		if err == nil && q.Close > 0 {
+			price = q.Close
+			change = q.Change
+			ask = q.Ask
+			bid = q.Bid
+			if ask <= 0 || bid <= 0 {
+				ask = price * 1.001
+				bid = price * 0.999
+			}
+			if q.Volume > 0 {
+				volume = q.Volume
+			} else {
+				volume = l.Volume
+			}
+			log.Printf("[worker] FUTURE %s = %.4f (prefix=%s→%s) [EODHD]", l.Ticker, price, prefix, commSymbol)
+		} else {
+			log.Printf("[worker] FUTURE %s: EODHD greška za %s: %v", l.Ticker, commSymbol, err)
+		}
 	}
-	delta := (rand.Float64()*2 - 1) * base * 0.01 //nolint:gosec
-	price := base + delta
-	if price < 0.01 {
-		price = 0.01
+
+	if price == 0 && w.requireLiveQuotes {
+		log.Printf("[worker] FUTURE %s: nema live podataka — preskačem ažuriranje (REQUIRE_LIVE)", l.Ticker)
+		return
 	}
-	ask := price * 1.001
-	bid := price * 0.999
-	change := price - base
-	volume := l.Volume + int64(rand.Intn(5000)) //nolint:gosec
+
+	// ── Fallback: random walk ±1% (samo LISTING_REQUIRE_LIVE_QUOTES=false) ─────
+	if price == 0 {
+		base := l.Price
+		if base == 0 {
+			base = 100.0
+		}
+		delta := (rand.Float64()*2 - 1) * base * 0.01 //nolint:gosec
+		price = base + delta
+		if price < 0.01 {
+			price = 0.01
+		}
+		ask = price * 1.001
+		bid = price * 0.999
+		change = price - base
+		volume = l.Volume + int64(rand.Intn(5000)) //nolint:gosec
+	}
 
 	// Ažurirati details: contract_size i settlement_date
 	m := parseJSONMap(l.DetailsJSON)
@@ -422,30 +540,33 @@ func (w *ListingRefresherWorker) refreshFuture(ctx context.Context, l domain.Lis
 	}
 
 	cs, _ := m["contract_size"].(float64)
-	log.Printf("[worker] FUTURE %s = %.4f (CS=%.0f, random walk)", l.Ticker, price, cs)
+	log.Printf("[worker] FUTURE %s = %.4f (CS=%.0f) [EODHD ili sintetika]", l.Ticker, price, cs)
 }
 
 // ─── OPTION ──────────────────────────────────────────────────────────────────
 
+// refreshOption koristi Yahoo Finance lanac. Sa LISTING_REQUIRE_LIVE_QUOTES=true nema
+// sintetičkih cena; alternativa iz speca (BS/generisani lanac) ostaje van produkcijskog
+// puta dok se eksplicitno ne uvede kao odvojen modul — ne mešati sa live quote-om.
 func (w *ListingRefresherWorker) refreshOption(ctx context.Context, l domain.Listing, now time.Time) {
 	underlying := extractOptionUnderlying(l.Ticker)
 	if underlying == "" {
 		log.Printf("[worker] OPTION %s: ne mogu izvući underlying ticker", l.Ticker)
-		w.saveOptionMock(ctx, l, now)
+		w.optionFallbackOrSkip(ctx, l, now)
 		return
 	}
 
 	yahooResp, err := fetchYahooOptions(ctx, w.httpClient, underlying)
 	time.Sleep(500 * time.Millisecond) // Yahoo rate-limit pauza
 	if err != nil {
-		log.Printf("[worker] OPTION %s: Yahoo greška: %v — koristim mock", l.Ticker, err)
-		w.saveOptionMock(ctx, l, now)
+		log.Printf("[worker] OPTION %s: Yahoo greška: %v", l.Ticker, err)
+		w.optionFallbackOrSkip(ctx, l, now)
 		return
 	}
 
 	if len(yahooResp.OptionChain.Result) == 0 {
-		log.Printf("[worker] OPTION %s: Yahoo prazan odgovor — koristim mock", l.Ticker)
-		w.saveOptionMock(ctx, l, now)
+		log.Printf("[worker] OPTION %s: Yahoo prazan odgovor", l.Ticker)
+		w.optionFallbackOrSkip(ctx, l, now)
 		return
 	}
 
@@ -477,8 +598,8 @@ func (w *ListingRefresherWorker) refreshOption(ctx context.Context, l domain.Lis
 	}
 
 	if contract == nil {
-		log.Printf("[worker] OPTION %s: kontrakt nije pronađen u Yahoo lancu (underlying=%s) — koristim mock", l.Ticker, underlying)
-		w.saveOptionMock(ctx, l, now)
+		log.Printf("[worker] OPTION %s: kontrakt nije pronađen u Yahoo lancu (underlying=%s)", l.Ticker, underlying)
+		w.optionFallbackOrSkip(ctx, l, now)
 		return
 	}
 
@@ -522,8 +643,12 @@ func (w *ListingRefresherWorker) refreshOption(ctx context.Context, l domain.Lis
 		l.Ticker, price, contract.ImpliedVolatility, contract.OpenInterest, underlying, underlyingPrice)
 }
 
-// saveOptionMock čuva mock vrednost za opciju (±2% od poslednje cene).
-func (w *ListingRefresherWorker) saveOptionMock(ctx context.Context, l domain.Listing, now time.Time) {
+// optionFallbackOrSkip: uz REQUIRE_LIVE ne upisuje sintetičke cene; inače mock za dev.
+func (w *ListingRefresherWorker) optionFallbackOrSkip(ctx context.Context, l domain.Listing, now time.Time) {
+	if w.requireLiveQuotes {
+		log.Printf("[worker] OPTION %s: preskačem ažuriranje (REQUIRE_LIVE, bez Yahoo/mock)", l.Ticker)
+		return
+	}
 	price, ask, bid, volume, change := mockPrice(l)
 	if err := w.repo.UpdatePrices(ctx, l.ID, price, ask, bid, volume, now); err != nil {
 		log.Printf("[worker] OPTION %s: greška pri mock čuvanju: %v", l.Ticker, err)
@@ -567,6 +692,7 @@ func (w *ListingRefresherWorker) fetchTodayVolume(ctx context.Context, symbol st
 }
 
 // ensureHistory seeduje 30 dana istorije ako listing još nema podataka.
+// Primarni izvor: EODHD EOD API. Fallback: Finnhub Candles.
 func (w *ListingRefresherWorker) ensureHistory(ctx context.Context, l domain.Listing, now time.Time) {
 	existing, err := w.repo.GetHistory(ctx, l.ID, now.AddDate(-1, 0, 0), now)
 	if err != nil || len(existing) > 0 {
@@ -574,8 +700,47 @@ func (w *ListingRefresherWorker) ensureHistory(ctx context.Context, l domain.Lis
 	}
 
 	log.Printf("[worker] ListingRefresher: seeding 30 dana istorije za %s...", l.Ticker)
-
 	from := now.AddDate(0, 0, -30)
+
+	// ── Primarni: EODHD EOD istorija ─────────────────────────────────────────
+	if w.eodhd != nil {
+		bars, eodhd_err := w.eodhd.EODHistory(ctx, eodhdStockSymbol(l.Ticker), from, now)
+		if eodhd_err == nil && len(bars) > 0 {
+			seeded := 0
+			for i, bar := range bars {
+				t, parseErr := time.Parse("2006-01-02", bar.Date)
+				if parseErr != nil {
+					continue
+				}
+				prevClose := bar.Close
+				if i > 0 {
+					prevClose = bars[i-1].Close
+				}
+				daily := domain.ListingDailyPriceInfo{
+					ListingID:   l.ID,
+					Date:        t.UTC(),
+					Price:       bar.Close,
+					AskHigh:     bar.High,
+					BidLow:      bar.Low,
+					PriceChange: bar.Close - prevClose,
+					Volume:      int64(bar.Volume),
+				}
+				if err := w.repo.AppendDailyPrice(ctx, daily); err != nil {
+					log.Printf("[worker] ListingRefresher: greška upisa EODHD istorije za %s [%s]: %v", l.Ticker, bar.Date, err)
+					continue
+				}
+				seeded++
+			}
+			log.Printf("[worker] ListingRefresher: seedovano %d dnevnih zapisa za %s [EODHD]", seeded, l.Ticker)
+			return
+		}
+		log.Printf("[worker] ListingRefresher: EODHD EOD greška za %s: %v — pokušavam Finnhub", l.Ticker, eodhd_err)
+	}
+
+	// ── Fallback: Finnhub Candles ─────────────────────────────────────────────
+	if w.finnhub == nil {
+		return
+	}
 	candles, err := w.finnhub.Candles(ctx, l.Ticker, from, now)
 	if err != nil {
 		log.Printf("[worker] ListingRefresher: Finnhub candles greška za %s: %v", l.Ticker, err)
@@ -610,7 +775,7 @@ func (w *ListingRefresherWorker) ensureHistory(ctx context.Context, l domain.Lis
 		}
 		seeded++
 	}
-	log.Printf("[worker] ListingRefresher: seedovano %d dnevnih zapisa za %s", seeded, l.Ticker)
+	log.Printf("[worker] ListingRefresher: seedovano %d dnevnih zapisa za %s [Finnhub]", seeded, l.Ticker)
 }
 
 // ─── Ticker parsers ───────────────────────────────────────────────────────────
@@ -626,30 +791,43 @@ func parseForexTicker(ticker string) (base, quote string) {
 
 // parseFutureTicker parsira npr. "CLJ22" → ("CL", 'J', 22).
 // Vraća ("", 0, -1) ako format nije prepoznat.
+//
+// Format tickera po CME konvenciji: PREFIX + MONTH_CODE + YY
+// gde je PREFIX 1-5 velikih slova, MONTH_CODE jedno slovo iz seta FGHJKMNQUVXZ,
+// a YY dvocifrena godina. Parsiramo od KRAJA: zadnje 2 cifre = godina,
+// prethodni bajt = mesečni kod, ostatak = prefiks.
 func parseFutureTicker(ticker string) (prefix string, monthLetter byte, year2 int) {
-	// Prefix = vodeća slova (velika), suffix = mesecni kod (1 slovo) + godina (2 broja)
-	i := 0
-	for i < len(ticker) && (unicode.IsLetter(rune(ticker[i])) || unicode.IsUpper(rune(ticker[i]))) {
-		i++
-	}
-	if i == 0 || i >= len(ticker) {
+	n := len(ticker)
+	// Minimum: 1 prefiks slovo + 1 mesec + 2 cifre = 4 znaka
+	if n < 4 {
 		return "", 0, -1
 	}
-	prefix = ticker[:i]
-	rest := ticker[i:]
 
-	// rest treba da bude npr. "J22" — jedno slovo + 2 cifre
-	if len(rest) < 3 {
-		return prefix, 0, -1
+	// Zadnje 2 cifre = godina
+	d1, d2 := ticker[n-2], ticker[n-1]
+	if d1 < '0' || d1 > '9' || d2 < '0' || d2 > '9' {
+		return "", 0, -1
 	}
-	letter := rest[0]
-	var yr int
-	for _, ch := range rest[1:] {
-		if ch >= '0' && ch <= '9' {
-			yr = yr*10 + int(ch-'0')
+	yr := int(d1-'0')*10 + int(d2-'0')
+
+	// Predzadnji bajt = mesečni kod (mora biti slovo)
+	ml := ticker[n-3]
+	if ml < 'A' || ml > 'Z' {
+		return "", 0, -1
+	}
+
+	// Sve pre mesečnog koda = prefiks (mora biti barem 1 slovo)
+	pfx := ticker[:n-3]
+	if pfx == "" {
+		return "", 0, -1
+	}
+	for _, ch := range pfx {
+		if ch < 'A' || ch > 'Z' {
+			return "", 0, -1
 		}
 	}
-	return prefix, letter, yr
+
+	return pfx, ml, yr
 }
 
 // extractOptionUnderlying izvlači underlying ticker iz opcijskog simbola.

@@ -11,6 +11,7 @@ import (
 	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/trading"
+	tradingworker "banka-backend/services/bank-service/internal/trading/worker"
 
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
@@ -46,7 +47,8 @@ func orderToPb(o trading.Order) *pb.TradingOrder {
 		msg.StopPrice = &v
 	}
 	if o.ApprovedBy != nil {
-		msg.ApprovedBy = o.ApprovedBy
+		v := *o.ApprovedBy
+		msg.ApprovedBy = &v
 	}
 	return msg
 }
@@ -61,6 +63,10 @@ func tradingError(err error) error {
 	case errors.Is(err, trading.ErrInvalidOrderState):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trading.ErrInsufficientMargin):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, trading.ErrInsufficientHoldings):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, trading.ErrInsufficientFunds):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trading.ErrLimitPriceRequired),
 		errors.Is(err, trading.ErrStopPriceRequired),
@@ -170,6 +176,21 @@ func (h *BankHandler) TradingCreateOrder(ctx context.Context, req *pb.TradingCre
 		accountID = trezorID
 	}
 
+	// Klijenti moraju imati TRADE_STOCKS permisiju da bi mogli da trguju.
+	isClient := claims.UserType == "CLIENT"
+	if isClient {
+		hasTradePermission := false
+		for _, p := range claims.Permissions {
+			if p == "TRADE_STOCKS" {
+				hasTradePermission = true
+				break
+			}
+		}
+		if !hasTradePermission {
+			return nil, status.Error(codes.PermissionDenied, "nemate dozvolu za trgovanje hartijama od vrednosti")
+		}
+	}
+
 	// Determine supervisor status from JWT — the authoritative source.
 	// An ADMIN is always treated as a supervisor; for EMPLOYEE we check the
 	// permissions array for the "SUPERVISOR" permission.
@@ -195,6 +216,7 @@ func (h *BankHandler) TradingCreateOrder(ctx context.Context, req *pb.TradingCre
 		AllOrNone:    req.GetAllOrNone(),
 		Margin:       req.GetMargin(),
 		IsSupervisor: isSupervisor,
+		IsClient:     isClient,
 	}
 
 	ppu, err := parseOptionalDecimal(req.PricePerUnit, "price_per_unit")
@@ -233,13 +255,34 @@ func (h *BankHandler) TradingCreateOrder(ctx context.Context, req *pb.TradingCre
 		}
 	}
 
+	// Margin: samo aktuari (AGENT/SUPERVISOR) ili ADMIN; klijenti koriste odobren kredit putem validateMargin.
+	if req.GetMargin() && claims.UserType == "EMPLOYEE" {
+		actuaryOK := false
+		for _, p := range claims.Permissions {
+			if p == "AGENT" || p == "SUPERVISOR" {
+				actuaryOK = true
+				break
+			}
+		}
+		if !actuaryOK {
+			return nil, status.Error(codes.PermissionDenied, "margin nalozi zahtevaju ulogu aktuara (AGENT ili SUPERVISOR)")
+		}
+	}
+
 	// AfterHours detekcija: ako je berza zatvorena ili u after-hours periodu (spec §7).
 	// Frontend šalje false po defaultu; server uvek overriduje sa tačnom vrijednošću.
 	if marketStatus, msErr := h.berzaService.IsExchangeOpen(ctx, listing.ExchangeID); msErr == nil {
 		domainReq.AfterHours = marketStatus == domain.MarketStatusAfterHours ||
 			marketStatus == domain.MarketStatusClosed
+		// Klijent: ne dozvoljavati novu kupovinu dok je berza potpuno zatvorena (jasna poruka umesto „sistem nedostupan”).
+		if isClient && domainReq.Direction == trading.OrderDirectionBuy &&
+			marketStatus == domain.MarketStatusClosed {
+			return nil, status.Error(codes.FailedPrecondition, "Berza je zatvorena; kupovina trenutno nije moguća. Pokušajte u radnom vremenu tržišta.")
+		}
 	}
 
+	// Menjačnica: prodajni kurs za klijente, srednji za zaposlene — isto kao u funds_manager.
+	ctx = tradingworker.WithIsClient(ctx, isClient)
 	order, err := h.tradingService.CreateOrder(ctx, domainReq)
 	if err != nil {
 		return nil, tradingError(err)

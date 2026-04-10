@@ -271,12 +271,16 @@ func requireClientOrEmployee(ctx context.Context) error {
 	return nil
 }
 
-// GetClientAccounts vraća aktivne račune trenutno prijavljenog klijenta.
+// GetClientAccounts vraća aktivne račune trenutno prijavljenog korisnika (klijent ili aktuar).
 // Mapped to: GET /bank/client/accounts
 func (h *BankHandler) GetClientAccounts(ctx context.Context, _ *emptypb.Empty) (*pb.GetClientAccountsResponse, error) {
-	vlasnikID, err := extractClientID(ctx)
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "niste autentifikovani")
+	}
+	vlasnikID, err := strconv.ParseInt(claims.Subject, 10, 64)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.Internal, "neispravan korisnički ID u tokenu: %v", err)
 	}
 
 	accounts, err := h.accountService.GetClientAccounts(ctx, vlasnikID)

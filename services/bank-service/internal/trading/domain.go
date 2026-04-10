@@ -32,8 +32,7 @@ var (
 	// a price_per_unit value.
 	ErrLimitPriceRequired = errors.New("limit nalog zahteva price_per_unit")
 
-	// ErrInvalidOrderType is returned for order types not yet implemented
-	// in this sprint (STOP, STOP_LIMIT) or for unrecognised values.
+	// ErrInvalidOrderType is returned for unrecognised or unsupported order type values.
 	ErrInvalidOrderType = errors.New("nepodržan ili nepoznat tip naloga")
 
 	// ErrInvalidDirection is returned when direction is neither BUY nor SELL.
@@ -65,6 +64,15 @@ var (
 	// ErrListingTypeNotAllowed is returned when a CLIENT tries to create an
 	// order for a listing type that is not available to clients (e.g. FOREX, OPTION).
 	ErrListingTypeNotAllowed = errors.New("klijenti mogu trgovati samo akcijama i futures-ima")
+
+	// ErrInsufficientHoldings is returned when a SELL order is submitted but
+	// the user does not own enough of the asset (net holdings < requested quantity).
+	ErrInsufficientHoldings = errors.New("nemate dovoljno hartija za prodaju")
+
+	// ErrInsufficientFunds is returned when a BUY order is submitted but
+	// the account's free balance (stanje_racuna − rezervisana_sredstva) is
+	// less than the order's notional value.
+	ErrInsufficientFunds = errors.New("nedovoljno sredstava na računu")
 )
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -89,6 +97,9 @@ const (
 
 // OrderStatus mirrors the CHECK constraint on orders.status.
 type OrderStatus string
+
+// ApprovedByNoApproval is persisted when an order is approved without supervisor review (clients, auto-approved agents).
+const ApprovedByNoApproval = "No need for approval"
 
 const (
 	OrderStatusPending  OrderStatus = "PENDING"
@@ -140,13 +151,16 @@ type Order struct {
 	StopPrice *decimal.Decimal
 
 	Status    OrderStatus
-	ApprovedBy *int64 // nil until reviewed by a supervisor; cross-service ref
+	// ApprovedBy is nil for PENDING orders. Auto-approved orders store the literal
+	// "No need for approval". Supervisor actions store the supervisor's user ID as decimal text.
+	ApprovedBy *string
 
 	IsDone            bool
 	RemainingPortions int32 // starts == Quantity; decremented on each partial fill
 	AfterHours        bool
 	AllOrNone         bool
 	Margin            bool
+	IsClient          bool // true = nalog kreirao klijent; engine koristi prodajni kurs za konverziju
 
 	LastModified time.Time
 	CreatedAt    time.Time
@@ -242,16 +256,21 @@ type CreateOrderRequest struct {
 	// or userType is "ADMIN"). When true, the order is auto-approved regardless
 	// of the actuary_info DB state, which may be stale or inconsistent.
 	IsSupervisor bool
+
+	// IsClient is true when the caller's JWT userType is "CLIENT".
+	// Stored in the DB so the async execution engine can apply the correct
+	// exchange rate (prodajni kurs) when converting USD fills to account currency.
+	IsClient bool
 }
 
 // ─── External service interfaces ─────────────────────────────────────────────
 
-// MarginChecker validates that a bank account holds enough free balance to
-// cover the initial margin cost of a margin order.
+// MarginChecker validates that a user has sufficient resources to cover the
+// initial margin cost of a margin order.
 //
-// The concrete implementation in internal/repository/ reads stanje_racuna and
-// rezervisana_sredstva from core_banking.racun; no implementation is required
-// in this sprint — the interface alone is sufficient for the service layer.
+// Per spec, a margin order is accepted when the user satisfies AT LEAST ONE of:
+//  1. Client: has an approved (active) credit whose amount > InitialMarginCost.
+//  2. Client or Actuary: the selected account's free balance > InitialMarginCost.
 type MarginChecker interface {
 	// HasSufficientMargin returns (true, nil) when the account's free balance
 	// (stanje_racuna − rezervisana_sredstva) is greater than or equal to
@@ -259,6 +278,13 @@ type MarginChecker interface {
 	// converts this to ErrInsufficientMargin.  Returns (false, err) on any
 	// DB-level failure.
 	HasSufficientMargin(ctx context.Context, accountID int64, required decimal.Decimal) (bool, error)
+
+	// HasApprovedCreditForMargin returns (true, nil) when the user has at least
+	// one approved (ODOBREN) credit whose iznos_kredita exceeds required.
+	// This is the credit-based margin condition from the spec (condition 1).
+	// Returns (false, nil) when no qualifying credit exists.
+	// Returns (false, err) on any DB-level failure.
+	HasApprovedCreditForMargin(ctx context.Context, userID int64, required decimal.Decimal) (bool, error)
 }
 
 // FundsManager handles account balance mutations that occur during the order
@@ -293,6 +319,21 @@ type FundsManager interface {
 	// touching rezervisana_sredstva (commission was never part of the reservation).
 	// Called once when an order is fully executed (MarkDone).
 	ChargeCommission(ctx context.Context, accountID int64, amount decimal.Decimal) error
+
+	// HasSufficientFunds returns (true, nil) when the account's free balance
+	// (stanje_racuna − rezervisana_sredstva), converted to the account's currency,
+	// is greater than or equal to the required USD amount.
+	// Returns (false, nil) when funds are insufficient — the service layer
+	// converts this to ErrInsufficientFunds.
+	// Returns (false, err) on any DB-level or conversion failure.
+	HasSufficientFunds(ctx context.Context, accountID int64, usdAmount decimal.Decimal) (bool, error)
+
+	// ConvertUSDToRSD converts a USD amount to RSD using the mid-rate exchange
+	// rate (no fee, same as the menjačnica without provizija).
+	// Used by the trading service to convert order notionals to RSD before
+	// comparing against an agent's daily limit (which is stored in RSD).
+	// Returns the original amount if the USD rate cannot be fetched.
+	ConvertUSDToRSD(ctx context.Context, usdAmount decimal.Decimal) (decimal.Decimal, error)
 }
 
 // ─── Repository interface ─────────────────────────────────────────────────────
@@ -313,7 +354,7 @@ type OrderRepository interface {
 	// UpdateStatus atomically sets the status and optional approver.
 	// Used by supervisor approve/decline actions and by the system
 	// auto-decline worker (expired settlement dates).
-	UpdateStatus(ctx context.Context, id int64, status OrderStatus, approvedBy *int64) (*Order, error)
+	UpdateStatus(ctx context.Context, id int64, status OrderStatus, approvedBy *string) (*Order, error)
 
 	// UpdateRemainingPortions decrements remaining portions and flips IsDone.
 	// Called by the async execution engine after each partial fill.
@@ -385,6 +426,18 @@ type OrderRepository interface {
 	//             approved_by, is_done, remaining_portions, after_hours,
 	//             all_or_none, margin, last_modified, created_at;
 	Cancel(ctx context.Context, id int64) (*Order, error)
+
+	// GetNetHoldings returns the effective owned quantity for a user and listing,
+	// accounting for all relevant order states:
+	//
+	//   + DONE BUY orders         (already delivered to portfolio)
+	//   - DONE SELL orders        (already removed from portfolio)
+	//   - PENDING SELL orders     (reserved to prevent over-selling)
+	//   - APPROVED SELL orders    (reserved to prevent over-selling)
+	//
+	// Used by the SELL ownership validation in the service layer to reject orders
+	// when the user does not hold (or has already committed to sell) enough shares.
+	GetNetHoldings(ctx context.Context, userID, listingID int64) (int64, error)
 }
 
 // ─── Service interface ────────────────────────────────────────────────────────
@@ -423,9 +476,11 @@ type TradingService interface {
 	// ApproveOrder transitions a PENDING order to APPROVED and records the
 	// reviewing supervisor's ID in approved_by.
 	//
-	// NOTE: The agent's used_limit is NOT incremented here.  Per the sprint
-	// spec, used_limit is charged at creation time for auto-approved orders
-	// only.  Retroactive charging on supervisor action is out of scope.
+	// NOTE: When the order belongs to an AGENT, used_limit is incremented via
+	// IncrementUsedLimitIfWithin.  If the agent's limit is already exceeded at
+	// the time of approval (edge case: limit was lowered after the order was
+	// created), the increment is silently skipped — the supervisor made the
+	// conscious decision to approve regardless.
 	//
 	// Returns ErrOrderNotFound if the order does not exist.
 	// Returns ErrInvalidOrderState if the order is not currently PENDING.

@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 
 	"banka-backend/services/bank-service/internal/domain"
 
@@ -217,7 +218,34 @@ func (s *tradingService) CreateOrder(ctx context.Context, req *CreateOrderReques
 		return nil, err
 	}
 
-	// ── 2. Margin check (before touching actuary limit) ───────────────────────
+	// ── 2a. SELL ownership check ─────────────────────────────────────────────
+	//
+	// Verify the user actually owns enough of this asset before accepting a SELL
+	// order. This runs before resolveStatus so that rejected SELL orders never
+	// affect the agent's used_limit or trigger fund operations.
+	// Supervisors trading from the bank's trezor account are exempt — they hold
+	// inventory on behalf of the bank (account resolved from AccountID=0).
+	if req.Direction == OrderDirectionSell && !req.IsSupervisor {
+		if err := s.validateSellOwnership(ctx, req); err != nil {
+			return nil, err
+		}
+	}
+
+	// ── 2b. Sufficient funds check for BUY orders ────────────────────────────
+	//
+	// Verify the account has enough free balance (stanje − rezervisano) before
+	// accepting a BUY order. This prevents over-reservation and ensures the
+	// user cannot buy without money. Runs before resolveStatus so that rejected
+	// BUY orders never affect the agent's used_limit.
+	// Margin orders are exempt because they use credit, not the account balance;
+	// validateMargin below handles the initial margin cost check for those.
+	if req.Direction == OrderDirectionBuy && !req.Margin {
+		if err := s.validateSufficientFunds(ctx, req); err != nil {
+			return nil, err
+		}
+	}
+
+	// ── 2c. Margin check (before touching actuary limit) ─────────────────────
 	//
 	// Rejected margin orders must never be counted against an agent's used_limit,
 	// so we validate funds first, before resolveStatus runs.
@@ -297,23 +325,97 @@ func validateOrderTypeFields(req *CreateOrderRequest) error {
 	}
 }
 
-// validateMargin fetches the listing's InitialMarginCost and asks the
-// MarginChecker whether the account holds sufficient free balance.
-// Returns ErrInsufficientMargin when funds are insufficient.
+// validateSellOwnership verifies that the caller owns at least
+// Quantity × ContractSize shares of the requested listing.
+//
+// Net holdings are computed as:
+//
+//	DONE BUY − DONE SELL − (PENDING|APPROVED SELL, not done)
+//
+// Subtracting active SELL orders from the available balance prevents
+// concurrent overselling: if the user has 10 shares and already has an
+// APPROVED SELL for 8, they cannot create a new SELL for 5.
+func (s *tradingService) validateSellOwnership(ctx context.Context, req *CreateOrderRequest) error {
+	net, err := s.orders.GetNetHoldings(ctx, req.UserID, req.ListingID)
+	if err != nil {
+		return fmt.Errorf("provera vlasništva hartije: %w", err)
+	}
+	needed := int64(req.Quantity) * int64(req.ContractSize)
+	if net < needed {
+		return ErrInsufficientHoldings
+	}
+	return nil
+}
+
+// validateSufficientFunds verifies that the account's free balance (stanje −
+// rezervisano, converted to the account's currency) covers the order's notional
+// plus commission (oba u USD). Called for BUY non-margin orders before any actuary limit is touched.
+func (s *tradingService) validateSufficientFunds(ctx context.Context, req *CreateOrderRequest) error {
+	totalUSD, err := s.resolveTotalBuyDebitUSD(ctx, req)
+	if err != nil {
+		return fmt.Errorf("izračunavanje iznosa za provjeru sredstava: %w", err)
+	}
+	ok, err := s.funds.HasSufficientFunds(ctx, req.AccountID, totalUSD)
+	if err != nil {
+		return fmt.Errorf("provjera sredstava za račun %d: %w", req.AccountID, err)
+	}
+	if !ok {
+		return ErrInsufficientFunds
+	}
+	return nil
+}
+
+// resolveTotalBuyDebitUSD vraća notional + proviziju u USD (valuta berze).
+func (s *tradingService) resolveTotalBuyDebitUSD(ctx context.Context, req *CreateOrderRequest) (decimal.Decimal, error) {
+	notional, err := s.resolveNotional(ctx, req)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	var comm decimal.Decimal
+	switch req.OrderType {
+	case OrderTypeMarket, OrderTypeStop:
+		comm = CalcMarketCommission(notional)
+	case OrderTypeLimit, OrderTypeStopLimit:
+		comm = CalcLimitCommission(notional)
+	default:
+		comm = decimal.Zero
+	}
+	return notional.Add(comm), nil
+}
+
+// validateMargin fetches the listing's InitialMarginCost and validates whether
+// the user satisfies at least one of the two margin conditions from the spec:
+//
+//  1. Client: has an approved credit whose amount > InitialMarginCost.
+//  2. Client or Actuary: selected account's free balance > InitialMarginCost.
+//
+// Returns ErrInsufficientMargin when neither condition is satisfied.
 func (s *tradingService) validateMargin(ctx context.Context, req *CreateOrderRequest) error {
 	imc, err := s.initialMarginCostForListing(ctx, req.ListingID)
 	if err != nil {
 		return err
 	}
 
-	ok, err := s.margin.HasSufficientMargin(ctx, req.AccountID, imc)
-	if err != nil {
-		return fmt.Errorf("provjera margin sredstava za račun %d: %w", req.AccountID, err)
+	// Condition 1: check approved credit (clients only; actuaries skip to condition 2).
+	creditOK, creditErr := s.margin.HasApprovedCreditForMargin(ctx, req.UserID, imc)
+	if creditErr != nil {
+		log.Printf("[trading] provjera kredita za margin (user=%d): %v", req.UserID, creditErr)
+		// Non-fatal: fall through to balance check.
 	}
-	if !ok {
-		return ErrInsufficientMargin
+	if creditOK {
+		return nil
 	}
-	return nil
+
+	// Condition 2: check account free balance.
+	balanceOK, balanceErr := s.margin.HasSufficientMargin(ctx, req.AccountID, imc)
+	if balanceErr != nil {
+		return fmt.Errorf("provjera margin sredstava za račun %d: %w", req.AccountID, balanceErr)
+	}
+	if balanceOK {
+		return nil
+	}
+
+	return ErrInsufficientMargin
 }
 
 // ─── Approval workflow ────────────────────────────────────────────────────────
@@ -367,9 +469,18 @@ func (s *tradingService) resolveStatus(ctx context.Context, req *CreateOrderRequ
 		return "", err
 	}
 
+	// Konvertujemo notional iz USD u RSD pre provere dnevnog limita agenta.
+	// Limit agenta je uvek u RSD; cene na berzi su u USD.
+	// Koristimo srednji kurs bez provizije (isto kao menjačnica za zaposlene).
+	notionalRSD, convErr := s.funds.ConvertUSDToRSD(ctx, notional)
+	if convErr != nil {
+		log.Printf("[trading] konverzija notional USD→RSD za agenta (employee_id=%d): %v — koristi se USD iznos", req.UserID, convErr)
+		notionalRSD = notional // fallback: poredi u USD ako konverzija ne uspe
+	}
+
 	// Atomično povećavamo used_limit ako je iznos u okviru dnevnog limita.
 	// Jedan UPDATE iskaz eliminuje TOCTOU race condition.
-	_, err = s.actuaries.IncrementUsedLimitIfWithin(ctx, req.UserID, notional)
+	_, err = s.actuaries.IncrementUsedLimitIfWithin(ctx, req.UserID, notionalRSD)
 	if errors.Is(err, domain.ErrActuaryLimitExceeded) {
 		// Iznos bi premašio limit → order ostaje PENDING (čeka supervisora).
 		return OrderStatusPending, nil
@@ -458,7 +569,8 @@ func (s *tradingService) ApproveOrder(ctx context.Context, orderID int64, superv
 		return nil, fmt.Errorf("%w: nalog je u statusu %s, a ne PENDING", ErrInvalidOrderState, order.Status)
 	}
 
-	updated, err := s.orders.UpdateStatus(ctx, orderID, OrderStatusApproved, &supervisorID)
+	sup := strconv.FormatInt(supervisorID, 10)
+	updated, err := s.orders.UpdateStatus(ctx, orderID, OrderStatusApproved, &sup)
 	if err != nil {
 		return nil, fmt.Errorf("odobravanje naloga %d: %w", orderID, err)
 	}
@@ -467,9 +579,15 @@ func (s *tradingService) ApproveOrder(ctx context.Context, orderID int64, superv
 	// We use IncrementUsedLimitIfWithin which is atomic; if the agent's limit is now
 	// exceeded (edge case: limit was lowered after order was created) we still approve
 	// the order but log the overflow — the supervisor made the conscious decision.
+	// Limit is stored in RSD; notional is in USD — convert before comparing.
 	notional, notionalErr := s.computeNotional(ctx, order, order.Quantity)
 	if notionalErr == nil {
-		if _, limErr := s.actuaries.IncrementUsedLimitIfWithin(ctx, order.UserID, notional); limErr != nil {
+		notionalRSD, convErr := s.funds.ConvertUSDToRSD(ctx, notional)
+		if convErr != nil {
+			log.Printf("[trading] konverzija notional USD→RSD pri odobravanju naloga %d: %v — koristi se USD iznos", orderID, convErr)
+			notionalRSD = notional
+		}
+		if _, limErr := s.actuaries.IncrementUsedLimitIfWithin(ctx, order.UserID, notionalRSD); limErr != nil {
 			if !errors.Is(limErr, domain.ErrActuaryLimitExceeded) && !errors.Is(limErr, domain.ErrActuaryNotFound) {
 				log.Printf("[trading] ažuriranje used_limit za agenta (order %d, user %d): %v", orderID, order.UserID, limErr)
 			}
@@ -503,7 +621,8 @@ func (s *tradingService) DeclineOrder(ctx context.Context, orderID int64, superv
 		return nil, fmt.Errorf("%w: nalog je u statusu %s, a ne PENDING", ErrInvalidOrderState, order.Status)
 	}
 
-	updated, err := s.orders.UpdateStatus(ctx, orderID, OrderStatusDeclined, &supervisorID)
+	sup := strconv.FormatInt(supervisorID, 10)
+	updated, err := s.orders.UpdateStatus(ctx, orderID, OrderStatusDeclined, &sup)
 	if err != nil {
 		return nil, fmt.Errorf("odbijanje naloga %d: %w", orderID, err)
 	}
@@ -577,6 +696,24 @@ func (s *tradingService) isSupervisor(ctx context.Context, userID int64) (bool, 
 
 // ─── Funds helpers ────────────────────────────────────────────────────────────
 
+// computeNotionalPlusCommission — ukupan USD iznos (notional + provizija) za rezervaciju / oslobađanje.
+func (s *tradingService) computeNotionalPlusCommission(ctx context.Context, order *Order, qty int32) (decimal.Decimal, error) {
+	n, err := s.computeNotional(ctx, order, qty)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	var comm decimal.Decimal
+	switch order.OrderType {
+	case OrderTypeMarket, OrderTypeStop:
+		comm = CalcMarketCommission(n)
+	case OrderTypeLimit, OrderTypeStopLimit:
+		comm = CalcLimitCommission(n)
+	default:
+		comm = decimal.Zero
+	}
+	return n.Add(comm), nil
+}
+
 // computeNotional calculates the notional value for a given order and quantity.
 // For MARKET orders, fetches the current Ask/Bid price from the listing service.
 // Used to determine how much to reserve or release from the account.
@@ -619,11 +756,11 @@ func (s *tradingService) reserveFundsForOrder(ctx context.Context, order *Order)
 	if order.Direction != OrderDirectionBuy {
 		return nil
 	}
-	notional, err := s.computeNotional(ctx, order, order.Quantity)
+	total, err := s.computeNotionalPlusCommission(ctx, order, order.Quantity)
 	if err != nil {
 		return fmt.Errorf("izračunavanje iznosa za rezervaciju (nalog %d): %w", order.ID, err)
 	}
-	if err := s.funds.ReserveFunds(ctx, order.AccountID, notional); err != nil {
+	if err := s.funds.ReserveFunds(ctx, order.AccountID, total); err != nil {
 		return fmt.Errorf("rezervacija sredstava za nalog %d: %w", order.ID, err)
 	}
 	return nil
@@ -635,12 +772,12 @@ func (s *tradingService) releaseFundsForOrder(ctx context.Context, order *Order)
 	if order.Direction != OrderDirectionBuy {
 		return
 	}
-	notional, err := s.computeNotional(ctx, order, order.RemainingPortions)
+	total, err := s.computeNotionalPlusCommission(ctx, order, order.RemainingPortions)
 	if err != nil {
 		log.Printf("[trading] izračunavanje iznosa za oslobađanje (nalog %d): %v", order.ID, err)
 		return
 	}
-	if err := s.funds.ReleaseFunds(ctx, order.AccountID, notional); err != nil {
+	if err := s.funds.ReleaseFunds(ctx, order.AccountID, total); err != nil {
 		log.Printf("[trading] oslobađanje sredstava za nalog %d: %v", order.ID, err)
 	}
 }

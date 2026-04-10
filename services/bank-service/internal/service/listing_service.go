@@ -4,19 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"banka-backend/services/bank-service/internal/domain"
+	"banka-backend/services/bank-service/internal/worker"
 )
-
 
 // listingService implementira domain.ListingService.
 type listingService struct {
-	repo domain.ListingRepository
+	repo       domain.ListingRepository
+	httpClient *http.Client
+	eodhdKey   string
 }
 
-func NewListingService(repo domain.ListingRepository) domain.ListingService {
-	return &listingService{repo: repo}
+func NewListingService(repo domain.ListingRepository, httpClient *http.Client, eodhdAPIKey string) domain.ListingService {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 25 * time.Second}
+	}
+	return &listingService{repo: repo, httpClient: httpClient, eodhdKey: eodhdAPIKey}
 }
 
 // ListListings vraća paginisanu listu hartija sa izvedenim finansijskim vrednostima.
@@ -45,11 +51,15 @@ func (s *listingService) GetListingByID(ctx context.Context, id int64) (*domain.
 	return &calc, nil
 }
 
-// GetListingHistory vraća istoriju dnevnih cena za datu hartiju i period.
+// GetListingHistory vraća istoriju cena za period: prvo sa eksternih izvora (Yahoo Finance, EODHD),
+// inače iz lokalne baze (dnevni zapisi iz workera).
 func (s *listingService) GetListingHistory(ctx context.Context, id int64, from, to time.Time) ([]domain.ListingDailyPriceInfo, error) {
-	// Proveriti da hartija postoji
-	if _, err := s.repo.GetByID(ctx, id); err != nil {
+	l, err := s.repo.GetByID(ctx, id)
+	if err != nil {
 		return nil, err
+	}
+	if ext, ok := worker.FetchListingHistoryFromMarkets(ctx, s.httpClient, s.eodhdKey, *l, from, to); ok && len(ext) > 0 {
+		return ext, nil
 	}
 	return s.repo.GetHistory(ctx, id, from, to)
 }

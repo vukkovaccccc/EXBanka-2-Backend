@@ -7,7 +7,7 @@
 --
 --   TRADE_STOCKS — dozvola za klijenta da pristupi sekciji Berze/trading.
 --                  Dodaje se u codebook radi konzistentnosti; u praksi se
---                  ne dodeljuje klijentima kroz user_permissions (nema UI za to),
+--                  dodela klijentu: user-service GET/PATCH /client/{id}/trade-permission (zaposleni) + UI na detalju klijenta,
 --                  pa se frontend prikazuje bez uslova permisije za sve klijente.
 --
 --   MANAGE_USERS — admin-nivo dozvola za upravljanje zaposlenima; referencira

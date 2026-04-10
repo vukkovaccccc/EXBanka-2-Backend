@@ -60,6 +60,21 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// isClientCtxKey je privatni ključ koji se koristi za prenošenje is_client
+// flaga kroz context između engine-a i funds_manager-a.
+type isClientCtxKey struct{}
+
+// WithIsClient dodaje is_client flag u context za funds_manager konverziju kursa.
+func WithIsClient(ctx context.Context, isClient bool) context.Context {
+	return context.WithValue(ctx, isClientCtxKey{}, isClient)
+}
+
+// IsClientFromCtx čita is_client flag iz context-a. Vraća false ako nije postavljen.
+func IsClientFromCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(isClientCtxKey{}).(bool)
+	return v
+}
+
 // ─── Market data interface ────────────────────────────────────────────────────
 
 // MarketSnapshot holds the live market values the engine needs for a single
@@ -185,7 +200,35 @@ func (e *Engine) Start(ctx context.Context) {
 // It fetches every APPROVED non-done order and, for each one:
 //  1. Checks whether the underlying asset's settlement date has expired.
 //  2. Spawns a goroutine if none is already running for that order.
+//
+// Additionally, it checks all PENDING orders for expired settlement dates and
+// auto-declines them so that supervisors cannot approve expired instruments.
 func (e *Engine) tick(ctx context.Context) {
+	// ── Auto-decline PENDING orders with expired settlement dates ─────────────
+	// PENDING orders have not yet been approved; if the underlying instrument's
+	// settlement date has passed, the supervisor's only valid action is DECLINE.
+	// We auto-decline here so the supervisor sees them pre-declined on next load.
+	pending := trading.OrderStatusPending
+	pendingOrders, err := e.orders.ListByStatus(ctx, &pending)
+	if err != nil {
+		log.Printf("[trading/engine] failed to list pending orders for expiry check: %v", err)
+	} else {
+		for _, po := range pendingOrders {
+			snap, snapErr := e.market.GetMarketSnapshot(ctx, po.ListingID)
+			if snapErr != nil {
+				log.Printf("[trading/engine] pending order %d: snapshot error: %v", po.ID, snapErr)
+				continue
+			}
+			if isSettlementExpired(snap) {
+				log.Printf("[trading/engine] pending order %d: settlement date expired — auto-declining", po.ID)
+				if _, decErr := e.orders.UpdateStatus(ctx, po.ID, trading.OrderStatusDeclined, nil); decErr != nil {
+					log.Printf("[trading/engine] pending order %d: auto-decline failed: %v", po.ID, decErr)
+				}
+			}
+		}
+	}
+
+	// ── Process APPROVED orders ───────────────────────────────────────────────
 	approved := trading.OrderStatusApproved
 	orders, err := e.orders.ListByStatus(ctx, &approved)
 	if err != nil {
@@ -221,15 +264,16 @@ func (e *Engine) tick(ctx context.Context) {
 			continue
 		}
 
-		go e.runOrder(ctx, &o, snapshot)
+		orderCtx := WithIsClient(ctx, o.IsClient)
+		go e.runOrder(orderCtx, &o)
 	}
 }
 
 // ─── Per-order goroutine ──────────────────────────────────────────────────────
 
 // runOrder is the goroutine body for a single order.
-// It owns the full lifecycle: stop activation → partial fills → completion.
-func (e *Engine) runOrder(ctx context.Context, order *trading.Order, initialSnapshot MarketSnapshot) {
+// It owns the full lifecycle: stop activation → (optional) limit trigger → partial fills → completion.
+func (e *Engine) runOrder(ctx context.Context, order *trading.Order) {
 	defer e.active.Delete(order.ID)
 
 	log.Printf("[trading/engine] order %d (%s %s): goroutine started", order.ID, order.OrderType, order.Direction)
@@ -259,11 +303,24 @@ func (e *Engine) runOrder(ctx context.Context, order *trading.Order, initialSnap
 		log.Printf("[trading/engine] order %d: stop triggered — executing as %s", order.ID, effectiveType)
 
 	case trading.OrderTypeMarket, trading.OrderTypeLimit:
-		// No activation phase; proceed directly to execution.
+		// No stop activation; proceed to limit trigger or execution.
 
 	default:
 		log.Printf("[trading/engine] order %d: unknown order type %q — aborting", order.ID, order.OrderType)
 		return
+	}
+
+	// Limit / stop-limit (post-trigger): wait until Ask/Bid crosses the limit (price watcher).
+	if effectiveType == trading.OrderTypeLimit {
+		activated, err := e.waitForLimitActivation(ctx, order)
+		if err != nil {
+			log.Printf("[trading/engine] order %d: limit activation error: %v", order.ID, err)
+			return
+		}
+		if !activated {
+			log.Printf("[trading/engine] order %d: limit activation aborted (canceled or shutdown)", order.ID)
+			return
+		}
 	}
 
 	if err := e.executeOrder(ctx, order, effectiveType); err != nil {
@@ -276,10 +333,12 @@ func (e *Engine) runOrder(ctx context.Context, order *trading.Order, initialSnap
 // waitForStopActivation blocks until the stop-price condition is met for a
 // STOP or STOP_LIMIT order, or until the order is canceled / ctx is done.
 //
-// Condition:
+// Uslov (usklađeno sa specifikacijom):
 //
-//	BUY  STOP / STOP_LIMIT: activates when live Ask >= StopPrice
-//	SELL STOP / STOP_LIMIT: activates when live Bid <= StopPrice
+//	BUY  STOP / STOP_LIMIT: Ask >= StopPrice (kupovni stop kad cena poraste)
+//	SELL STOP / STOP_LIMIT: Bid <= StopPrice (prodajni stop kad cena padne)
+//
+// Posle aktivacije: STOP → izvršavanje kao MARKET; STOP_LIMIT → kao LIMIT (PricePerUnit).
 //
 // Returns (true, nil) when the condition is met.
 // Returns (false, nil) when the order is no longer active (canceled externally
@@ -339,108 +398,114 @@ func (e *Engine) waitForStopActivation(ctx context.Context, order *trading.Order
 	}
 }
 
+// ─── Limit activation (price watcher) ─────────────────────────────────────────
+
+// waitForLimitActivation blocks until a LIMIT order can execute:
+//
+//	BUY  LIMIT: Ask <= PricePerUnit (buy at or below the limit)
+//	SELL LIMIT: Bid >= PricePerUnit
+
+func (e *Engine) waitForLimitActivation(ctx context.Context, order *trading.Order) (bool, error) {
+	if order.PricePerUnit == nil {
+		log.Printf("[trading/engine] order %d: PricePerUnit missing on LIMIT — aborting", order.ID)
+		return false, nil
+	}
+	limit := *order.PricePerUnit
+
+	ticker := time.NewTicker(stopPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, nil
+		case <-ticker.C:
+			current, err := e.orders.GetByID(ctx, order.ID)
+			if err != nil {
+				return false, err
+			}
+			if current.Status != trading.OrderStatusApproved || current.IsDone {
+				return false, nil
+			}
+			snapshot, err := e.market.GetMarketSnapshot(ctx, order.ListingID)
+			if err != nil {
+				log.Printf("[trading/engine] order %d: market snapshot error during limit poll: %v", order.ID, err)
+				continue
+			}
+			ask := decimal.NewFromFloat(snapshot.Ask)
+			bid := decimal.NewFromFloat(snapshot.Bid)
+			switch order.Direction {
+			case trading.OrderDirectionBuy:
+				if ask.LessThanOrEqual(limit) {
+					return true, nil
+				}
+			case trading.OrderDirectionSell:
+				if bid.GreaterThanOrEqual(limit) {
+					return true, nil
+				}
+			}
+			log.Printf("[trading/engine] order %d: limit not met yet (Ask=%.6f Bid=%.6f Limit=%s)",
+				order.ID, snapshot.Ask, snapshot.Bid, limit.String())
+		}
+	}
+}
+
+// commissionForOrderType applies MARKET vs LIMIT fee schedules using the original
+// order type (STOP counts as MARKET, STOP_LIMIT as LIMIT).
+func commissionForOrderType(ot trading.OrderType, fullNotional decimal.Decimal) decimal.Decimal {
+	switch ot {
+	case trading.OrderTypeMarket, trading.OrderTypeStop:
+		return trading.CalcMarketCommission(fullNotional)
+	case trading.OrderTypeLimit, trading.OrderTypeStopLimit:
+		return trading.CalcLimitCommission(fullNotional)
+	default:
+		return decimal.Zero
+	}
+}
+
 // ─── Execution loop ───────────────────────────────────────────────────────────
 
 // executeOrder runs the partial-fill simulation for one order until it is
 // fully filled, canceled externally, or the context is canceled.
 //
-// effectiveType is the order type after stop activation:
-//   - MARKET or STOP  → effectiveType = MARKET  → fill at live Ask / Bid
-//   - LIMIT or STOP_LIMIT → effectiveType = LIMIT  → fill at order.PricePerUnit
+// Sleep is applied *between* partial fills (not before the first fill).
+// After-hours adds a fixed 30 minutes per wait segment.
 func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effectiveType trading.OrderType) error {
 	for {
-		// ── 1. Fetch live market data ─────────────────────────────────────────
-		snapshot, err := e.market.GetMarketSnapshot(ctx, order.ListingID)
-		if err != nil {
-			return err
-		}
-
-		// ── 2. Determine execution price (per contract) ───────────────────────
-		//
-		// Per spec: execution price = ContractSize × Ask (MARKET BUY)
-		//                             ContractSize × Bid (MARKET SELL)
-		//                             ContractSize × PricePerUnit (LIMIT)
-		//
-		// Storing the per-contract price in executed_price makes the fill cost
-		// directly computable as: executed_quantity × executed_price.
-		executedPrice, err := resolveExecutionPrice(order, effectiveType, snapshot)
-		if err != nil {
-			return err
-		}
-
-		// ── 3. Compute simulated wait time ────────────────────────────────────
-		//
-		// Formula (from spec):
-		//   waitSecs = Random(0, (24×60) / (Volume / RemainingPortions))
-		//
-		// Interpretation: high Volume/Remaining ratio → liquid market → shorter wait.
-		waitSecs := calcWaitSeconds(snapshot.Volume, order.RemainingPortions)
-		if order.AfterHours {
-			waitSecs += afterHoursPenaltySeconds
-		}
-
-		log.Printf("[trading/engine] order %d: sleeping %.1fs before next fill (remaining=%d)",
-			order.ID, waitSecs, order.RemainingPortions)
-
-		// ── 4. Sleep (with cancellation support) ──────────────────────────────
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(time.Duration(waitSecs * float64(time.Second))):
-		}
-
-		// ── 5. Re-fetch order state — detect external cancellation ────────────
-		//
-		// A supervisor may have canceled the order while we were sleeping.
-		// Using the fresh DB state is mandatory; the local variable is stale.
 		current, err := e.orders.GetByID(ctx, order.ID)
 		if err != nil {
 			return err
 		}
 		if current.Status != trading.OrderStatusApproved || current.IsDone {
-			log.Printf("[trading/engine] order %d: order no longer active after sleep (status=%s is_done=%v) — exiting",
+			log.Printf("[trading/engine] order %d: order not active (%s is_done=%v) — exiting",
 				order.ID, current.Status, current.IsDone)
 			return nil
 		}
 
-		// ── 6. Determine chunk size ───────────────────────────────────────────
+		snapshot, err := e.market.GetMarketSnapshot(ctx, current.ListingID)
+		if err != nil {
+			return err
+		}
+
+		executedPrice, err := resolveExecutionPrice(current, effectiveType, snapshot)
+		if err != nil {
+			return err
+		}
+
 		var chunkSize int32
 		if current.AllOrNone {
-			// AON: fill the entire remaining quantity in one shot.
 			chunkSize = current.RemainingPortions
 		} else {
-			// Standard partial fill: random chunk in [1, min(remaining, 10)].
 			chunkSize = calcChunkSize(current.RemainingPortions)
 		}
 
-		// ── 7. Record the fill transaction ────────────────────────────────────
-		// NOTE: CreateTransaction and UpdateRemainingPortions are two separate
-		// DB calls and therefore not atomic.  A crash between them may produce
-		// a phantom transaction with no corresponding decrement.  Wrapping both
-		// in a DB transaction requires repository-level support; tracked as a
-		// known limitation.
 		if _, err := e.orders.CreateTransaction(ctx, current.ID, chunkSize, executedPrice); err != nil {
 			return err
 		}
 
-		// ── 7b. Charge commission on first fill ───────────────────────────────
-		// Per spec: "Provizija se računa na celokupnog naloga" — commission is
-		// based on the FULL order notional, not just the partial chunk.
-		// We charge it exactly once on the first fill so that it is collected
-		// even if the remaining portions are later canceled by the user.
-		//
-		// Detection: before any fill, RemainingPortions == Quantity.
-		// After this fill we will decrement remaining, so this comparison
-		// reliably identifies the first partial fill.
 		if current.RemainingPortions == current.Quantity {
 			notional := executedPrice.Mul(decimal.NewFromInt(int64(current.Quantity)))
-			var commission decimal.Decimal
-			switch effectiveType {
-			case trading.OrderTypeMarket:
-				commission = trading.CalcMarketCommission(notional)
-			case trading.OrderTypeLimit:
-				commission = trading.CalcLimitCommission(notional)
-			}
+			commission := commissionForOrderType(current.OrderType, notional)
 			if commission.IsPositive() {
 				if err := e.funds.ChargeCommission(ctx, current.AccountID, commission); err != nil {
 					log.Printf("[trading/engine] order %d: charge commission error: %v", current.ID, err)
@@ -450,8 +515,6 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 			}
 		}
 
-		// ── 7c. Settle funds for this fill chunk ──────────────────────────────
-		// fillAmount = contractSize × unitPrice × chunkSize
 		fillAmount := executedPrice.Mul(decimal.NewFromInt(int64(chunkSize)))
 		if current.Direction == trading.OrderDirectionBuy {
 			if err := e.funds.SettleBuyFill(ctx, current.AccountID, fillAmount); err != nil {
@@ -463,13 +526,11 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 			}
 		}
 
-		// ── 8. Update remaining portions ──────────────────────────────────────
 		newRemaining := current.RemainingPortions - chunkSize
 		log.Printf("[trading/engine] order %d: filled %d contracts at %s (remaining: %d → %d)",
 			current.ID, chunkSize, executedPrice.String(), current.RemainingPortions, newRemaining)
 
 		if newRemaining == 0 {
-			// Atomically finalize: status=DONE, is_done=true, remaining=0.
 			if _, err := e.orders.MarkDone(ctx, current.ID); err != nil {
 				return err
 			}
@@ -481,10 +542,21 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 			return err
 		}
 
-		// Carry the fresh state into the next loop iteration so that
-		// RemainingPortions is accurate for the next wait-time calculation.
 		order = current
 		order.RemainingPortions = newRemaining
+
+		waitSecs := calcWaitSeconds(snapshot.Volume, newRemaining)
+		if current.AfterHours {
+			waitSecs += afterHoursPenaltySeconds
+		}
+		log.Printf("[trading/engine] order %d: sleeping %.1fs before next fill (remaining=%d)",
+			order.ID, waitSecs, newRemaining)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(time.Duration(waitSecs * float64(time.Second))):
+		}
 	}
 }
 
@@ -503,7 +575,8 @@ func isSettlementExpired(s MarketSnapshot) bool {
 // resolveExecutionPrice computes the per-contract execution price for a fill.
 //
 //	effectiveType = MARKET: ContractSize × Ask (BUY) or ContractSize × Bid (SELL)
-//	effectiveType = LIMIT:  ContractSize × PricePerUnit
+//	effectiveType = LIMIT:  BUY  ContractSize × min(limit, Ask)
+//	                   SELL ContractSize × max(limit, Bid)
 //
 // Returns an error only if a LIMIT order is missing PricePerUnit — which
 // should have been caught at order creation; included here as a safety net.
@@ -529,7 +602,26 @@ func resolveExecutionPrice(
 			// Defensive; validated at creation.
 			return decimal.Zero, trading.ErrLimitPriceRequired
 		}
-		return cs.Mul(*order.PricePerUnit), nil
+		limit := *order.PricePerUnit
+		askDec := decimal.NewFromFloat(snapshot.Ask)
+		bidDec := decimal.NewFromFloat(snapshot.Bid)
+		var unit decimal.Decimal
+		if order.Direction == trading.OrderDirectionBuy {
+			// min(limit, Ask)
+			if limit.LessThan(askDec) {
+				unit = limit
+			} else {
+				unit = askDec
+			}
+		} else {
+			// max(limit, Bid)
+			if limit.GreaterThan(bidDec) {
+				unit = limit
+			} else {
+				unit = bidDec
+			}
+		}
+		return cs.Mul(unit), nil
 
 	default:
 		// Unreachable after stop-activation normalises the type.

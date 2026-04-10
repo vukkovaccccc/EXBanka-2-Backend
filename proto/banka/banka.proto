@@ -644,7 +644,7 @@ message TradingOrder {
   optional string price_per_unit     = 9;  // nil za MARKET naloge
   optional string stop_price         = 10; // nil za MARKET i LIMIT naloge
   string          status             = 11; // PENDING | APPROVED | DECLINED | DONE | CANCELED
-  optional int64  approved_by        = 12; // nil dok nije pregledano
+  optional string approved_by        = 12; // "No need for approval" | supervisor user id (decimal text) | empty until reviewed
   bool            is_done            = 13;
   int32           remaining_portions = 14;
   bool            after_hours        = 15;

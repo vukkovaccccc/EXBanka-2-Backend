@@ -253,7 +253,7 @@ func (h *FundHandler) invest(w http.ResponseWriter, r *http.Request, claims *aut
 	var accCurrency string
 	h.db.WithContext(ctx).Raw(`
 		SELECT v.oznaka FROM core_banking.racun r
-		JOIN core_banking.valuta v ON v.id = r.valuta_id WHERE r.id = ?
+		JOIN core_banking.valuta v ON v.id = r.id_valute WHERE r.id = ?
 	`, accountID).Scan(&accCurrency)
 
 	// Convert to RSD
@@ -355,7 +355,7 @@ func (h *FundHandler) withdraw(w http.ResponseWriter, r *http.Request, claims *a
 	var accCurrency string
 	h.db.WithContext(ctx).Raw(`
 		SELECT v.oznaka FROM core_banking.racun r
-		JOIN core_banking.valuta v ON v.id = r.valuta_id WHERE r.id = ?
+		JOIN core_banking.valuta v ON v.id = r.id_valute WHERE r.id = ?
 	`, accountID).Scan(&accCurrency)
 
 	// Convert withdraw amount (RSD) to account currency

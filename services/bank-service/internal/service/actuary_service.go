@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 
 	"banka-backend/services/bank-service/internal/domain"
 
@@ -40,23 +39,37 @@ func (s *actuaryService) ListAgents(ctx context.Context) ([]domain.Actuary, erro
 }
 
 // SetAgentLimit ažurira dnevni limit troškova za datog agenta.
-// Supervizori ne mogu imati limit (ne bi trebalo pozvati ovu metodu za supervizore,
-// ali servis ne proverava ulogu — to je odgovornost handler sloja).
-func (s *actuaryService) SetAgentLimit(ctx context.Context, employeeID int64, limit decimal.Decimal) (*domain.Actuary, error) {
+// Validira da novi limit nije manji od trenutnog used_limit (Scenario 3).
+// Posle uspešnog ažuriranja upisuje red u actuary_limit_audit.
+func (s *actuaryService) SetAgentLimit(ctx context.Context, actorEmployeeID, targetEmployeeID int64, limit decimal.Decimal) (*domain.Actuary, error) {
 	if limit.IsNegative() {
-		return nil, fmt.Errorf("limit ne može biti negativan")
+		return nil, domain.ErrActuaryLimitNegative
 	}
-	a, err := s.repo.GetByEmployeeID(ctx, employeeID)
+	if limit.IsZero() {
+		return nil, domain.ErrActuaryLimitZero
+	}
+	a, err := s.repo.GetByEmployeeID(ctx, targetEmployeeID)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.Update(ctx, domain.UpdateActuaryInput{
+	oldLimit := a.Limit
+	if limit.LessThan(a.UsedLimit) {
+		return nil, domain.ErrActuaryLimitBelowUsed
+	}
+	updated, err := s.repo.Update(ctx, domain.UpdateActuaryInput{
 		ID:           a.ID,
 		ActuaryType:  a.ActuaryType,
 		Limit:        limit,
 		UsedLimit:    a.UsedLimit,
 		NeedApproval: a.NeedApproval,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.InsertActuaryLimitAudit(ctx, actorEmployeeID, targetEmployeeID, oldLimit, limit); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // ResetAgentUsedLimit resetuje potrošnju agenta na 0 (ručni reset).

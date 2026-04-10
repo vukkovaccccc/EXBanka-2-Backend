@@ -3211,8 +3211,7 @@
         },
         "approvedBy": {
           "type": "string",
-          "format": "int64",
-          "title": "nil dok nije pregledano"
+          "title": "\"No need for approval\" | supervisor user id (decimal text) | empty until reviewed"
         },
         "isDone": {
           "type": "boolean"

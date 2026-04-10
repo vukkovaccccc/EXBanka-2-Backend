@@ -77,29 +77,34 @@ func (h *MyOrdersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// ── Serialize ─────────────────────────────────────────────────────────────
 	type orderJSON struct {
-		ID                int64      `json:"id"`
-		UserID            int64      `json:"userId"`
-		AccountID         int64      `json:"accountId"`
-		ListingID         int64      `json:"listingId"`
-		OrderType         string     `json:"orderType"`
-		Direction         string     `json:"direction"`
-		Quantity          int32      `json:"quantity"`
-		ContractSize      int32      `json:"contractSize"`
-		PricePerUnit      *string    `json:"pricePerUnit,omitempty"`
-		StopPrice         *string    `json:"stopPrice,omitempty"`
-		Status            string     `json:"status"`
-		ApprovedBy        *int64     `json:"approvedBy,omitempty"`
-		IsDone            bool       `json:"isDone"`
-		RemainingPortions int32      `json:"remainingPortions"`
-		AfterHours        bool       `json:"afterHours"`
-		AllOrNone         bool       `json:"allOrNone"`
-		Margin            bool       `json:"margin"`
-		LastModified      time.Time  `json:"lastModified"`
-		CreatedAt         time.Time  `json:"createdAt"`
+		ID                int64     `json:"id"`
+		UserID            int64     `json:"userId"`
+		AccountID         int64     `json:"accountId"`
+		ListingID         int64     `json:"listingId"`
+		OrderType         string    `json:"orderType"`
+		Direction         string    `json:"direction"`
+		Quantity          int32     `json:"quantity"`
+		ContractSize      int32     `json:"contractSize"`
+		PricePerUnit      *string   `json:"pricePerUnit,omitempty"`
+		StopPrice         *string   `json:"stopPrice,omitempty"`
+		Status            string    `json:"status"`
+		ApprovedBy        *string   `json:"approvedBy,omitempty"`
+		ApprovedByLabel   string    `json:"approvedByLabel"`
+		IsDone            bool      `json:"isDone"`
+		RemainingPortions int32     `json:"remainingPortions"`
+		AfterHours        bool      `json:"afterHours"`
+		AllOrNone         bool      `json:"allOrNone"`
+		Margin            bool      `json:"margin"`
+		LastModified      time.Time `json:"lastModified"`
+		CreatedAt         time.Time `json:"createdAt"`
 	}
 
 	result := make([]orderJSON, 0, len(orders))
 	for _, o := range orders {
+		label := ""
+		if o.ApprovedBy != nil {
+			label = *o.ApprovedBy
+		}
 		item := orderJSON{
 			ID:                o.ID,
 			UserID:            o.UserID,
@@ -110,6 +115,7 @@ func (h *MyOrdersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Quantity:          o.Quantity,
 			ContractSize:      o.ContractSize,
 			Status:            string(o.Status),
+			ApprovedByLabel:   label,
 			IsDone:            o.IsDone,
 			RemainingPortions: o.RemainingPortions,
 			AfterHours:        o.AfterHours,
@@ -126,9 +132,7 @@ func (h *MyOrdersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			v := o.StopPrice.String()
 			item.StopPrice = &v
 		}
-		if o.ApprovedBy != nil {
-			item.ApprovedBy = o.ApprovedBy
-		}
+		item.ApprovedBy = o.ApprovedBy
 		result = append(result, item)
 	}
 

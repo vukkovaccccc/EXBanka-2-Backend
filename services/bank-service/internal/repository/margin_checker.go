@@ -29,6 +29,22 @@ func NewMarginChecker(db *gorm.DB) trading.MarginChecker {
 	return &marginChecker{db: db}
 }
 
+// HasApprovedCreditForMargin vraća (true, nil) kada korisnik ima barem jedan
+// odobren (ODOBREN) kredit čiji iznos_kredita prelazi traženi iznos.
+// Ovo je uslov 1 iz specifikacije: "Klijent: Neki kredit koji ima > Initial Margin Cost".
+func (m *marginChecker) HasApprovedCreditForMargin(ctx context.Context, userID int64, required decimal.Decimal) (bool, error) {
+	var maxCredit float64
+	err := m.db.WithContext(ctx).Raw(`
+		SELECT COALESCE(MAX(iznos_kredita), 0)
+		FROM core_banking.kredit
+		WHERE vlasnik_id = ? AND status = 'ODOBREN'
+	`, userID).Scan(&maxCredit).Error
+	if err != nil {
+		return false, fmt.Errorf("margin check (kredit): %w", err)
+	}
+	return decimal.NewFromFloat(maxCredit).GreaterThan(required), nil
+}
+
 // HasSufficientMargin vraća (true, nil) kada slobodna sredstva naloga
 // pokrivaju traženi iznos. Slobodna sredstva = stanje_racuna − rezervisana_sredstva.
 func (m *marginChecker) HasSufficientMargin(ctx context.Context, accountID int64, required decimal.Decimal) (bool, error) {

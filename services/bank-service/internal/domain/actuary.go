@@ -16,6 +16,10 @@ var (
 	ErrNotActuary           = errors.New("korisnik nije registrovan kao aktuar")
 	ErrNotSupervisor        = errors.New("pristup odbijen: zahteva ulogu supervizora")
 	ErrActuaryLimitExceeded = errors.New("nalog bi premašio dnevni limit agenta")
+	// ErrActuaryLimitBelowUsed — novi limit ne sme biti ispod već utrošenog (used_limit) tog dana.
+	ErrActuaryLimitBelowUsed = errors.New("novi limit ne može biti manji od već utrošenog iznosa (usedLimit)")
+	ErrActuaryLimitNegative  = errors.New("limit ne može biti negativan")
+	ErrActuaryLimitZero      = errors.New("limit mora biti veći od nule")
 )
 
 // ─── Tipovi ───────────────────────────────────────────────────────────────────
@@ -100,6 +104,9 @@ type ActuaryRepository interface {
 	// Vraća (nil, ErrActuaryLimitExceeded) ako bi iznos premašio dnevni limit.
 	// Ovo eliminuje TOCTOU race condition koji bi nastao pri odvojenom čitanju i pisanju.
 	IncrementUsedLimitIfWithin(ctx context.Context, employeeID int64, amount decimal.Decimal) (*Actuary, error)
+
+	// InsertActuaryLimitAudit beleži promenu dnevnog limita agenta (Scenario 3 — audit).
+	InsertActuaryLimitAudit(ctx context.Context, actorEmployeeID, targetEmployeeID int64, oldLimit, newLimit decimal.Decimal) error
 }
 
 // ─── Service interfejs ────────────────────────────────────────────────────────
@@ -112,7 +119,8 @@ type ActuaryService interface {
 
 	// Operacije supervizorskog portala
 	ListAgents(ctx context.Context) ([]Actuary, error)
-	SetAgentLimit(ctx context.Context, employeeID int64, limit decimal.Decimal) (*Actuary, error)
+	// SetAgentLimit postavlja novi dnevni limit; actorEmployeeID je supervizor/admin iz JWT-a (audit).
+	SetAgentLimit(ctx context.Context, actorEmployeeID, targetEmployeeID int64, limit decimal.Decimal) (*Actuary, error)
 	ResetAgentUsedLimit(ctx context.Context, employeeID int64) (*Actuary, error)
 	SetAgentNeedApproval(ctx context.Context, employeeID int64, needApproval bool) (*Actuary, error)
 

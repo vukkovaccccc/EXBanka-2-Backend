@@ -157,11 +157,24 @@ func (h *ActuaryHandler) SetAgentLimit(ctx context.Context, req *pb.SetAgentLimi
 	if err := h.requireSupervisor(ctx); err != nil {
 		return nil, err
 	}
+	actorID, err := extractActuaryEmployeeID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Convert proto double → decimal to preserve precision in the domain layer.
 	limit := decimal.NewFromFloat(req.Limit)
-	_, err := h.service.SetAgentLimit(ctx, req.EmployeeId, limit)
+	_, err = h.service.SetAgentLimit(ctx, actorID, req.EmployeeId, limit)
 	if errors.Is(err, domain.ErrActuaryNotFound) {
 		return nil, status.Error(codes.NotFound, domain.ErrActuaryNotFound.Error())
+	}
+	if errors.Is(err, domain.ErrActuaryLimitBelowUsed) {
+		return nil, status.Error(codes.FailedPrecondition, domain.ErrActuaryLimitBelowUsed.Error())
+	}
+	if errors.Is(err, domain.ErrActuaryLimitNegative) {
+		return nil, status.Error(codes.InvalidArgument, domain.ErrActuaryLimitNegative.Error())
+	}
+	if errors.Is(err, domain.ErrActuaryLimitZero) {
+		return nil, status.Error(codes.InvalidArgument, domain.ErrActuaryLimitZero.Error())
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "greška pri postavljanju limita: %v", err)
@@ -230,8 +243,18 @@ func (h *ActuaryHandler) CreateAgent(ctx context.Context, req *pb.CreateAgentReq
 	}
 
 	if req.Limit > 0 {
+		actorID, err := extractActuaryEmployeeID(ctx)
+		if err != nil {
+			return nil, err
+		}
 		limit := decimal.NewFromFloat(req.Limit)
-		a, err = h.service.SetAgentLimit(ctx, req.EmployeeId, limit)
+		a, err = h.service.SetAgentLimit(ctx, actorID, req.EmployeeId, limit)
+		if errors.Is(err, domain.ErrActuaryLimitBelowUsed) {
+			return nil, status.Error(codes.FailedPrecondition, domain.ErrActuaryLimitBelowUsed.Error())
+		}
+		if errors.Is(err, domain.ErrActuaryLimitNegative) {
+			return nil, status.Error(codes.InvalidArgument, domain.ErrActuaryLimitNegative.Error())
+		}
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "agent kreiran ali greška pri postavljanju limita: %v", err)
 		}

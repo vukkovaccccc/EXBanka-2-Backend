@@ -87,6 +87,8 @@ func NewListingRepository(db *gorm.DB) domain.ListingRepository {
 
 // List vraća paginisanu listu hartija sa opcionalnim filterima.
 func (r *listingRepository) List(ctx context.Context, filter domain.ListingFilter) ([]domain.Listing, int64, error) {
+	// Izvedene vrednosti (change %, dollar volume, initial margin) računaju se u servisnom sloju;
+	// ručna korekcija listinga u produkciji ide kroz administrativne alate / SQL — nije deo ovog repozitorijuma.
 	q := r.db.WithContext(ctx).Model(&listingModel{})
 
 	if filter.ListingType != "" {

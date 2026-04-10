@@ -56,7 +56,12 @@ type Config struct {
 	// Ako je prazno, RequestKartica endpoint vraća 500.
 	NotificationServiceAddr string // env: NOTIFICATION_SERVICE_ADDR
 
-	// Finnhub — API ključ za tržišne podatke (https://finnhub.io).
+	// EODHD — primarni API ključ za tržišne podatke (https://eodhd.com).
+	// Real-time quotes za stocks, forex, futures; EOD istorija za stocks.
+	// Ako je prazno, worker prelazi na Finnhub/AV fallback.
+	EODHDAPIKey string // env: EODHD_API_KEY
+
+	// Finnhub — sekundarni API ključ za tržišne podatke (https://finnhub.io).
 	// Ako je prazno, ListingRefresherWorker koristi mock vrednosti.
 	FinnhubAPIKey string // env: FINNHUB_API_KEY
 
@@ -67,6 +72,15 @@ type Config struct {
 	// ListingRefreshIntervalMinutes — koliko često worker osvežava cene hartija.
 	// Default: 15 minuta. Za testiranje postaviti na 1.
 	ListingRefreshIntervalMinutes int // env: LISTING_REFRESH_INTERVAL_MINUTES
+
+	// ListingRequireLiveQuotes — ako je true (podrazumevano), worker ne upisuje
+	// sintetičke/mock cene; pri neuspehu API-ja preskače se ažuriranje listinga.
+	// Postaviti LISTING_REQUIRE_LIVE_QUOTES=false samo za lokalni dev bez API ključeva.
+	ListingRequireLiveQuotes bool // env: LISTING_REQUIRE_LIVE_QUOTES (default true)
+
+	// StateRevenueAccountID — core_banking.racun.id tekućeg RSD računa „države” za simulaciju
+	// prijema poreza (uplata istim iznosom u RSD kao što je obračunat). 0 = isključeno.
+	StateRevenueAccountID int64 // env: STATE_REVENUE_ACCOUNT_ID
 }
 
 // Load reads ENV vars and returns a populated Config.
@@ -108,10 +122,27 @@ func Load() (*Config, error) {
 		RedisURL:                os.Getenv("REDIS_URL"),
 		NotificationServiceAddr: getEnv("NOTIFICATION_SERVICE_ADDR", "notification-service:50053"),
 
+		EODHDAPIKey:                   os.Getenv("EODHD_API_KEY"),
 		FinnhubAPIKey:                 os.Getenv("FINNHUB_API_KEY"),
 		AlphaVantageAPIKey:            os.Getenv("ALPHAVANTAGE_API_KEY"),
 		ListingRefreshIntervalMinutes: getEnvInt("LISTING_REFRESH_INTERVAL_MINUTES", 15),
+		ListingRequireLiveQuotes: loadListingRequireLiveQuotes(),
+		StateRevenueAccountID:    getEnvInt64("STATE_REVENUE_ACCOUNT_ID", 0),
 	}, nil
+}
+
+// loadListingRequireLiveQuotes: default true — bez lažnih tržišnih cena u produkciji.
+// LISTING_REQUIRE_LIVE_QUOTES=false eksplicitno dozvoljava sintetiku ako je i ALLOW_SYNTHETIC.
+// LISTING_STRICT_EXTERNAL=true (zastarelo) tretira se kao require live.
+func loadListingRequireLiveQuotes() bool {
+	if os.Getenv("LISTING_STRICT_EXTERNAL") == "true" || os.Getenv("LISTING_STRICT_EXTERNAL") == "1" {
+		return true
+	}
+	v := os.Getenv("LISTING_REQUIRE_LIVE_QUOTES")
+	if v == "" {
+		return true
+	}
+	return v == "true" || v == "1"
 }
 
 // DSN returns the PostgreSQL connection string accepted by GORM's postgres driver.
@@ -142,6 +173,15 @@ func getEnvFloat(key string, fallback float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
 		}
 	}
 	return fallback
