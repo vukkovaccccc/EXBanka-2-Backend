@@ -130,29 +130,132 @@ func (f *fundsManager) ReleaseFunds(ctx context.Context, accountID int64, usdAmo
 // SettleBuyFill atomično smanjuje i stanje_racuna i rezervisana_sredstva
 // za iznos konvertovan u valutu računa. Kreira i zapis u transakcija tabeli.
 // amount je u USD (valuta berze); konvertuje se u valutu računa pre oduzimanja.
+//
+// Za klijente sa ne-USD računom koristi se 3-struko knjiženje kroz bankine trezorske račune
+// (analogno menjačnici), čime se evidentira konverzija i provizija:
+//  1. Zaduži klijentski račun za debit (u valuti računa, npr. EUR)
+//  2. Odobri bankin trezor FROM (prima klijentovu valutu)
+//  3. Zaduži bankin USD trezor (banka "plaća" USD za hartiju)
+//
+// Za zaposlene i USD račune koristi se direktno knjiženje bez posredničkih računa.
 func (f *fundsManager) SettleBuyFill(ctx context.Context, accountID int64, amount decimal.Decimal) error {
 	currency := f.accountCurrency(ctx, accountID)
 	debit := f.convertUSDToAccountCurrency(ctx, amount, currency)
+	isClient := tradingworker.IsClientFromCtx(ctx)
 
-	result := f.db.WithContext(ctx).Exec(
-		`UPDATE core_banking.racun
-		 SET stanje_racuna        = stanje_racuna - ?,
-		     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
-		 WHERE id = ?`,
-		debit.InexactFloat64(), debit.InexactFloat64(), accountID,
-	)
-	if result.Error != nil {
-		return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, result.Error)
+	// Zaposleni ili USD račun: direktno knjiženje (bez posrednika).
+	if !isClient || currency == "USD" {
+		result := f.db.WithContext(ctx).Exec(
+			`UPDATE core_banking.racun
+			 SET stanje_racuna        = stanje_racuna - ?,
+			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
+			 WHERE id = ?`,
+			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
+		)
+		if result.Error != nil {
+			return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, result.Error)
+		}
+		f.db.WithContext(ctx).Create(&transakcijaModel{
+			RacunID:          accountID,
+			TipTransakcije:   "ISPLATA",
+			Iznos:            debit.InexactFloat64(),
+			Opis:             "Kupovina hartije od vrednosti",
+			VremeIzvrsavanja: time.Now().UTC(),
+			Status:           "IZVRSEN",
+		})
+		return nil
 	}
-	f.db.WithContext(ctx).Create(&transakcijaModel{
-		RacunID:          accountID,
-		TipTransakcije:   "ISPLATA",
-		Iznos:            debit.InexactFloat64(),
-		Opis:             "Kupovina hartije od vrednosti",
-		VremeIzvrsavanja: time.Now().UTC(),
-		Status:           "IZVRSEN",
+
+	// Klijent sa ne-USD računom: 3-struko knjiženje kroz bankine trezorske račune.
+	trezorFromID := f.fetchCurrencyTrezorID(ctx, currency)
+	trezorUSDID := f.fetchCurrencyTrezorID(ctx, "USD")
+
+	if trezorFromID == 0 || trezorUSDID == 0 {
+		log.Printf("[funds_manager] trezorski račun nije pronađen (valuta=%s, USD trezor=%d) — direktno knjiženje", currency, trezorUSDID)
+		result := f.db.WithContext(ctx).Exec(
+			`UPDATE core_banking.racun
+			 SET stanje_racuna        = stanje_racuna - ?,
+			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
+			 WHERE id = ?`,
+			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
+		)
+		if result.Error != nil {
+			return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, result.Error)
+		}
+		f.db.WithContext(ctx).Create(&transakcijaModel{
+			RacunID:          accountID,
+			TipTransakcije:   "ISPLATA",
+			Iznos:            debit.InexactFloat64(),
+			Opis:             "Kupovina hartije od vrednosti",
+			VremeIzvrsavanja: time.Now().UTC(),
+			Status:           "IZVRSEN",
+		})
+		return nil
+	}
+
+	now := time.Now().UTC()
+	opis := fmt.Sprintf("Kupovina hartije od vrednosti: %.6g USD → %.6g %s", amount.InexactFloat64(), debit.InexactFloat64(), currency)
+
+	return f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Zaduži klijentski račun (stanje + rezervisana sredstva).
+		if err := tx.Exec(
+			`UPDATE core_banking.racun
+			 SET stanje_racuna        = stanje_racuna - ?,
+			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
+			 WHERE id = ?`,
+			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
+		).Error; err != nil {
+			return fmt.Errorf("zaduži klijentski račun %d: %w", accountID, err)
+		}
+
+		// 2. Odobri bankin trezor FROM (prima klijentovu valutu, npr. EUR).
+		if err := tx.Exec(
+			`UPDATE core_banking.racun SET stanje_racuna = stanje_racuna + ? WHERE id = ?`,
+			debit.InexactFloat64(), trezorFromID,
+		).Error; err != nil {
+			return fmt.Errorf("odobri trezor %s: %w", currency, err)
+		}
+
+		// 3. Zaduži bankin USD trezor (banka "plaća" USD za hartiju od vrednosti).
+		if err := tx.Exec(
+			`UPDATE core_banking.racun SET stanje_racuna = stanje_racuna - ? WHERE id = ?`,
+			amount.InexactFloat64(), trezorUSDID,
+		).Error; err != nil {
+			return fmt.Errorf("zaduži USD trezor: %w", err)
+		}
+
+		// Audit trail: 3 transakcije.
+		entries := []transakcijaModel{
+			{
+				RacunID:          accountID,
+				TipTransakcije:   "ISPLATA",
+				Iznos:            debit.InexactFloat64(),
+				Opis:             opis,
+				VremeIzvrsavanja: now,
+				Status:           "IZVRSEN",
+			},
+			{
+				RacunID:          trezorFromID,
+				TipTransakcije:   "UPLATA",
+				Iznos:            debit.InexactFloat64(),
+				Opis:             opis,
+				VremeIzvrsavanja: now,
+				Status:           "IZVRSEN",
+			},
+			{
+				RacunID:          trezorUSDID,
+				TipTransakcije:   "ISPLATA",
+				Iznos:            amount.InexactFloat64(),
+				Opis:             opis,
+				VremeIzvrsavanja: now,
+				Status:           "IZVRSEN",
+			},
+		}
+		if err := tx.Create(&entries).Error; err != nil {
+			return fmt.Errorf("upiši transakcije BUY filla: %w", err)
+		}
+		return nil
 	})
-	return nil
 }
 
 // CreditSellFill povećava stanje_racuna za iznos konvertovan u valutu računa.
@@ -241,6 +344,23 @@ func (f *fundsManager) bankTrezorAccountID(ctx context.Context) int64 {
 		`SELECT id FROM core_banking.racun WHERE broj_racuna = ?`,
 		"666000122200000008",
 	).Scan(&id)
+	return id
+}
+
+// fetchCurrencyTrezorID pronalazi ID bankinog trezorskog računa za datu valutu.
+// Trezorski računi su vlasništvo korisnika sa id=2 (trezor@exbanka.rs).
+// Vraća 0 ako trezorski račun za tu valutu nije pronađen.
+func (f *fundsManager) fetchCurrencyTrezorID(ctx context.Context, currencyOznaka string) int64 {
+	var id int64
+	f.db.WithContext(ctx).Raw(`
+		SELECT ra.id
+		FROM core_banking.racun ra
+		JOIN core_banking.valuta v ON v.id = ra.id_valute
+		WHERE ra.id_vlasnika = 2
+		  AND v.oznaka = ?
+		  AND ra.status = 'AKTIVAN'
+		LIMIT 1
+	`, currencyOznaka).Scan(&id)
 	return id
 }
 
