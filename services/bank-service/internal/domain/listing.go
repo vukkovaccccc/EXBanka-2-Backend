@@ -80,6 +80,7 @@ type ListingRepository interface {
 	GetByID(ctx context.Context, id int64) (*Listing, error)
 	GetHistory(ctx context.Context, id int64, from, to time.Time) ([]ListingDailyPriceInfo, error)
 	GetLatestDailyChange(ctx context.Context, id int64) (float64, error)
+	Create(ctx context.Context, l Listing) (*Listing, error)
 	UpdatePrices(ctx context.Context, id int64, price, ask, bid float64, volume int64, at time.Time) error
 	UpdateDetails(ctx context.Context, id int64, detailsJSON string) error
 	AppendDailyPrice(ctx context.Context, info ListingDailyPriceInfo) error

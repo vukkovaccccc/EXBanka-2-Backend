@@ -217,20 +217,22 @@ func (r *listingRepository) GetHistory(ctx context.Context, id int64, from, to t
 }
 
 // GetLatestDailyChange vraća poslednju vrednost price_change za datu hartiju.
+// Koristi Find umesto First da bi izbeglo GORM-ovo ERROR logovanje za prazan rezultat
+// (novo-kreirani listinzi nemaju dnevne zapise — to nije greška).
 func (r *listingRepository) GetLatestDailyChange(ctx context.Context, id int64) (float64, error) {
-	var m listingDailyPriceInfoModel
+	var rows []listingDailyPriceInfoModel
 	err := r.db.WithContext(ctx).
 		Where("listing_id = ?", id).
 		Order("date DESC").
 		Limit(1).
-		First(&m).Error
+		Find(&rows).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 0, nil
-		}
 		return 0, fmt.Errorf("listing latest change: %w", err)
 	}
-	return m.PriceChange, nil
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[0].PriceChange, nil
 }
 
 // UpdatePrices ažurira tekuće cene i vreme osvežavanja hartije.
@@ -286,6 +288,30 @@ func (r *listingRepository) AppendDailyPrice(ctx context.Context, info domain.Li
 		return fmt.Errorf("listing append daily price: %w", err)
 	}
 	return nil
+}
+
+// Create upisuje novu hartiju u bazu. Ako hartija sa istim tickerom već postoji,
+// operacija se preskače (ON CONFLICT DO NOTHING) i vraća se postojeći red.
+func (r *listingRepository) Create(ctx context.Context, l domain.Listing) (*domain.Listing, error) {
+	m := listingModel{
+		Ticker:      l.Ticker,
+		Name:        l.Name,
+		ExchangeID:  l.ExchangeID,
+		ListingType: string(l.ListingType),
+		Price:       l.Price,
+		Ask:         l.Ask,
+		Bid:         l.Bid,
+		Volume:      l.Volume,
+		DetailsJSON: l.DetailsJSON,
+	}
+	err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&m).Error
+	if err != nil {
+		return nil, fmt.Errorf("listing create: %w", err)
+	}
+	result := m.toDomain()
+	return &result, nil
 }
 
 // ListAll vraća sve hartije bez filtera — koristi ga worker za iteraciju.

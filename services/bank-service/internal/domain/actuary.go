@@ -105,6 +105,18 @@ type ActuaryRepository interface {
 	// Ovo eliminuje TOCTOU race condition koji bi nastao pri odvojenom čitanju i pisanju.
 	IncrementUsedLimitIfWithin(ctx context.Context, employeeID int64, amount decimal.Decimal) (*Actuary, error)
 
+	// IncrementUsedLimitAlways atomski povećava used_limit za agenta za dati iznos,
+	// BEZ OBZIRA na to da li novi zbir premašuje dnevni limit.
+	// Potrošnja se uvek beleži — status naloga (PENDING vs APPROVED) određuje pozivalac
+	// na osnovu vraćenog exceeded zastavice.
+	//
+	// Vraća:
+	//   - ažurirani Actuary
+	//   - exceeded = true ako nova vrednost used_limit > limit (treba PENDING)
+	//   - exceeded = false ako je novi used_limit unutar limita (može APPROVED)
+	//   - ErrActuaryNotFound ako zaposleni nije registrovan kao AGENT
+	IncrementUsedLimitAlways(ctx context.Context, employeeID int64, amount decimal.Decimal) (actuary *Actuary, exceeded bool, err error)
+
 	// InsertActuaryLimitAudit beleži promenu dnevnog limita agenta (Scenario 3 — audit).
 	InsertActuaryLimitAudit(ctx context.Context, actorEmployeeID, targetEmployeeID int64, oldLimit, newLimit decimal.Decimal) error
 }

@@ -178,13 +178,16 @@ func main() {
 	exchangeService := service.NewExchangeService(exchangeProvider, exchangeTransferRepo, cfg.ExchangeSpreadRate, cfg.ExchangeProvizijaRate)
 
 	orderRepo := repository.NewOrderRepository(db)
-	marginChecker := repository.NewMarginChecker(db)
-	fundsManager := repository.NewFundsManager(db, exchangeService)
+	marginChecker := repository.NewMarginChecker(db, exchangeService)
+	fundsManager := repository.NewFundsManager(db, exchangeService, cfg.ExchangeProvizijaRate)
 	tradingService := trading.NewTradingService(orderRepo, listingService, actuaryRepo, marginChecker, fundsManager)
 
 	// ── Trading engine (async order execution) ────────────────────────────────
+	// tickBus povezuje ListingRefresherWorker (publisher) sa trading engine-om
+	// (subscriber) za event-driven okidanje LIMIT naloga.
+	tickBus := tradingworker.NewPriceTickBus()
 	marketDataProvider := tradingworker.NewListingMarketDataProvider(listingRepo)
-	tradingEngine := tradingworker.NewEngine(orderRepo, marketDataProvider, fundsManager, 0)
+	tradingEngine := tradingworker.NewEngine(orderRepo, marketDataProvider, fundsManager, berzaService, db, 0, tickBus)
 
 	bankHandler := handler.NewBankHandler(currencyService, delatnostService, accountService, paymentService, kreditService, karticaService, berzaService, listingService, exchangeService, tradingService, userClient, accountPublisher)
 
@@ -198,6 +201,7 @@ func main() {
 	portfolioHandler := handler.NewPortfolioHandler(db, listingService, cfg.JWTAccessSecret)
 	taxHandler := handler.NewTaxHandler(db, exchangeService, userClient, cfg.JWTAccessSecret, cfg.StateRevenueAccountID)
 	myOrdersHandler := handler.NewMyOrdersHandler(tradingService, cfg.JWTAccessSecret)
+	tradingFXHandler := handler.NewTradingFXHandler(tradingService, accountService, exchangeService, cfg.JWTAccessSecret)
 	fundHandler := handler.NewFundHandler(db, exchangeService, cfg.JWTAccessSecret)
 
 	// ── 4. Auth interceptor ──────────────────────────────────────────────────
@@ -266,6 +270,7 @@ func main() {
 	httpMux.Handle("PATCH /bank/cards/{id}/block", klientKarticeHandler)        // PATCH /bank/cards/{id}/block (blokiranje)
 	httpMux.Handle("/bank/internal/actuary/", internalActuaryHandler)           // POST/DELETE — user-service interni pozivi
 	httpMux.Handle("GET /bank/trading/my-orders", myOrdersHandler)               // GET /bank/trading/my-orders — caller's own orders (all roles)
+	httpMux.Handle("POST /bank/trading/fx-breakdown", tradingFXHandler)          // POST /bank/trading/fx-breakdown — FX transparency za klijente
 	httpMux.Handle("/bank/portfolio/", portfolioHandler)                        // GET /bank/portfolio/my, POST /bank/portfolio/publish, POST /bank/portfolio/exercise
 	httpMux.Handle("/bank/tax/", taxHandler)                                    // GET /bank/tax/users, POST /bank/tax/calculate
 	httpMux.Handle("/bank/funds/", fundHandler)                                 // GET /bank/funds, POST /bank/funds/{id}/invest, POST /bank/funds/{id}/withdraw
@@ -289,12 +294,12 @@ func main() {
 	go tradingEngine.Start(ctx)
 
 	// ── 7e2. Daily-ish scan: PENDING futures orders past settlement → DECLINED ─
-	futuresExpiryWorker := worker.NewFuturesPendingExpiryWorker(orderRepo, listingRepo)
+	futuresExpiryWorker := worker.NewFuturesPendingExpiryWorker(orderRepo, listingRepo, tradingService)
 	go futuresExpiryWorker.Start(ctx)
 
 	// ── 7c. Start ListingRefresherWorker (osvežava cene hartija periodično) ────
 	listingRefreshInterval := time.Duration(cfg.ListingRefreshIntervalMinutes) * time.Minute
-	listingRefresherWorker := worker.NewListingRefresherWorker(listingRepo, listingRefreshInterval, cfg.EODHDAPIKey, cfg.FinnhubAPIKey, cfg.AlphaVantageAPIKey, cfg.ListingRequireLiveQuotes)
+	listingRefresherWorker := worker.NewListingRefresherWorker(listingRepo, listingRefreshInterval, cfg.EODHDAPIKey, cfg.FinnhubAPIKey, cfg.AlphaVantageAPIKey, cfg.ListingRequireLiveQuotes, tickBus)
 	go listingRefresherWorker.Start(ctx)
 
 	// ── 7d. Start DailyLimitResetWorker (resetuje used_limit agenata u 23:59) ─

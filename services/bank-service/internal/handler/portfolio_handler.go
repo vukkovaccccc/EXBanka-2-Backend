@@ -91,18 +91,19 @@ func (h *PortfolioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ─── GET /bank/portfolio/my ───────────────────────────────────────────────────
 
 type holdingResponse struct {
-	ListingID    string  `json:"listingId"`
-	Ticker       string  `json:"ticker"`
-	Name         string  `json:"name"`
-	ListingType  string  `json:"listingType"`
-	Quantity     int64   `json:"quantity"`
-	CurrentPrice float64 `json:"currentPrice"`
-	AvgBuyPrice  float64 `json:"avgBuyPrice"`
-	Profit       float64 `json:"profit"`
-	LastModified string  `json:"lastModified"`
-	AccountID    string  `json:"accountId"`
-	PublicShares int     `json:"publicShares"`
-	DetailsJSON  string  `json:"detailsJson"`
+	ListingID         string  `json:"listingId"`
+	Ticker            string  `json:"ticker"`
+	Name              string  `json:"name"`
+	ListingType       string  `json:"listingType"`
+	Quantity          int64   `json:"quantity"`
+	AvailableQuantity int64   `json:"availableQuantity"`
+	CurrentPrice      float64 `json:"currentPrice"`
+	AvgBuyPrice       float64 `json:"avgBuyPrice"`
+	Profit            float64 `json:"profit"`
+	LastModified      string  `json:"lastModified"`
+	AccountID         string  `json:"accountId"`
+	PublicShares      int     `json:"publicShares"`
+	DetailsJSON       string  `json:"detailsJson"`
 }
 
 type portfolioResponse struct {
@@ -121,9 +122,11 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 
 	ctx := r.Context()
 
-	// ── 1. Aggregate net holdings from DONE orders ─────────────────────────────
+	// ── 1. Aggregate net holdings from DONE and partially-filled CANCELED orders ──
 	//
 	// Net shares per listing: sum of BUY quantities minus sum of SELL quantities.
+	// CANCELED BUY orders with partial fills are included: the executed portion is
+	// quantity - remaining_portions (remaining_portions is preserved on cancel).
 	// Average buy price: weighted average of executed_price from order_transactions
 	// for BUY orders; falls back to price_per_unit if no transactions recorded.
 	var rows []holdingRow
@@ -132,7 +135,14 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 			SELECT
 				o.listing_id,
 				o.account_id,
-				SUM(o.quantity * o.contract_size)  AS bought,
+				SUM(
+					CASE
+						WHEN o.status = 'DONE'
+							THEN o.quantity
+						ELSE
+							(o.quantity - o.remaining_portions)
+					END
+				)                                  AS bought,
 				MAX(o.last_modified)               AS last_mod,
 				CASE
 					WHEN SUM(tx.qty) > 0
@@ -149,14 +159,28 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 				GROUP BY ot.order_id
 			) tx ON tx.order_id = o.id
 			WHERE o.user_id = ? AND o.direction = 'BUY'
-			  AND o.status = 'DONE' AND o.is_done = TRUE
+			  AND (
+			      (o.status = 'DONE' AND o.is_done = TRUE)
+			      OR (o.status = 'CANCELED' AND (o.quantity - o.remaining_portions) > 0)
+			  )
 			GROUP BY o.listing_id, o.account_id
 		),
 		sell_agg AS (
-			SELECT listing_id, SUM(quantity * contract_size) AS sold
+			SELECT listing_id,
+				SUM(
+					CASE
+						WHEN status = 'DONE'
+							THEN quantity
+						ELSE
+							(quantity - remaining_portions)
+					END
+				) AS sold
 			FROM core_banking.orders
 			WHERE user_id = ? AND direction = 'SELL'
-			  AND status = 'DONE' AND is_done = TRUE
+			  AND (
+			      (status = 'DONE' AND is_done = TRUE)
+			      OR (status = 'CANCELED' AND (quantity - remaining_portions) > 0)
+			  )
 			GROUP BY listing_id
 		)
 		SELECT
@@ -174,7 +198,26 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// ── 2. Load public share counts ────────────────────────────────────────────
+	// ── 2. Load active (pending/approved) SELL quantities per listing ─────────
+	type activeSellRow struct {
+		ListingID  int64 `gorm:"column:listing_id"`
+		ActiveSell int64 `gorm:"column:active_sell"`
+	}
+	var activeSellRows []activeSellRow
+	h.db.WithContext(ctx).Raw(`
+		SELECT listing_id, SUM(quantity) AS active_sell
+		FROM core_banking.orders
+		WHERE user_id = ? AND direction = 'SELL'
+		  AND status IN ('PENDING', 'APPROVED')
+		  AND is_done = FALSE
+		GROUP BY listing_id
+	`, userID).Scan(&activeSellRows)
+	activeSellMap := make(map[int64]int64, len(activeSellRows))
+	for _, a := range activeSellRows {
+		activeSellMap[a.ListingID] = a.ActiveSell
+	}
+
+	// ── 3. Load public share counts ────────────────────────────────────────────
 	type pubRow struct {
 		ListingID int64 `gorm:"column:listing_id"`
 		Total     int   `gorm:"column:total"`
@@ -191,7 +234,7 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 		pubMap[p.ListingID] = p.Total
 	}
 
-	// ── 3. Load tax data (paid this year, unpaid this month) ─────────────────
+	// ── 4. Load tax data (paid this year, unpaid this month) ─────────────────
 	now := time.Now()
 	var taxPaid float64
 	h.db.WithContext(ctx).Raw(`
@@ -207,7 +250,7 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 		WHERE user_id = ? AND year = ? AND month = ? AND paid = FALSE
 	`, userID, now.Year(), int(now.Month())).Scan(&taxUnpaid)
 
-	// ── 4. Enrich with current listing data ────────────────────────────────────
+	// ── 5. Enrich with current listing data ────────────────────────────────────
 	holdings := make([]holdingResponse, 0, len(rows))
 	var totalProfit float64
 
@@ -217,25 +260,38 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 			continue // skip stale listing references
 		}
 
+		// FOREX orders are excluded from the portfolio — balances are tracked
+		// through bank accounts in different currencies, not as portfolio holdings.
+		if listing.ListingType == domain.ListingTypeForex {
+			continue
+		}
+
 		profit := (listing.Price - row.AvgBuyPrice) * float64(row.NetShares)
 		// For STOCKs only: accumulate profit for the "profit section"
 		if listing.ListingType == domain.ListingTypeStock {
 			totalProfit += profit
 		}
 
+		activeSell := activeSellMap[row.ListingID]
+		available := row.NetShares - activeSell
+		if available < 0 {
+			available = 0
+		}
+
 		holdings = append(holdings, holdingResponse{
-			ListingID:    strconv.FormatInt(row.ListingID, 10),
-			Ticker:       listing.Ticker,
-			Name:         listing.Name,
-			ListingType:  string(listing.ListingType),
-			Quantity:     row.NetShares,
-			CurrentPrice: listing.Price,
-			AvgBuyPrice:  row.AvgBuyPrice,
-			Profit:       profit,
-			LastModified: row.LastModified.UTC().Format(time.RFC3339),
-			AccountID:    strconv.FormatInt(row.AccountID, 10),
-			PublicShares: pubMap[row.ListingID],
-			DetailsJSON:  listing.DetailsJSON,
+			ListingID:         strconv.FormatInt(row.ListingID, 10),
+			Ticker:            listing.Ticker,
+			Name:              listing.Name,
+			ListingType:       string(listing.ListingType),
+			Quantity:          row.NetShares,
+			AvailableQuantity: available,
+			CurrentPrice:      listing.Price,
+			AvgBuyPrice:       row.AvgBuyPrice,
+			Profit:            profit,
+			LastModified:      row.LastModified.UTC().Format(time.RFC3339),
+			AccountID:         strconv.FormatInt(row.AccountID, 10),
+			PublicShares:      pubMap[row.ListingID],
+			DetailsJSON:       listing.DetailsJSON,
 		})
 	}
 
@@ -278,12 +334,29 @@ func (h *PortfolioHandler) publishShares(w http.ResponseWriter, r *http.Request,
 
 	ctx := r.Context()
 
-	// Verify user actually holds at least `quantity` of this listing
+	// Verify user actually holds at least `quantity` of this listing.
+	// Include CANCELED BUY orders with partial fills (executed = quantity - remaining_portions).
 	var netShares int64
 	h.db.WithContext(ctx).Raw(`
-		SELECT COALESCE(SUM(CASE WHEN direction='BUY' THEN quantity*contract_size ELSE -(quantity*contract_size) END), 0)
+		SELECT COALESCE(SUM(
+			CASE
+				WHEN direction = 'BUY'  AND status = 'DONE'
+					THEN quantity * contract_size
+				WHEN direction = 'BUY'  AND status = 'CANCELED'
+					THEN (quantity - remaining_portions) * contract_size
+				WHEN direction = 'SELL' AND status = 'DONE'
+					THEN -(quantity * contract_size)
+				WHEN direction = 'SELL' AND status = 'CANCELED'
+					THEN -((quantity - remaining_portions) * contract_size)
+				ELSE 0
+			END
+		), 0)
 		FROM core_banking.orders
-		WHERE user_id = ? AND listing_id = ? AND status = 'DONE' AND is_done = TRUE
+		WHERE user_id = ? AND listing_id = ?
+		  AND (
+		      (status = 'DONE' AND is_done = TRUE)
+		      OR (status = 'CANCELED' AND (quantity - remaining_portions) > 0)
+		  )
 	`, userID, listingID).Scan(&netShares)
 
 	var alreadyPublic int

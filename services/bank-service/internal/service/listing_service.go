@@ -71,9 +71,12 @@ func (s *listingService) GetListingHistory(ctx context.Context, id int64, from, 
 func calculate(l domain.Listing, change float64) domain.ListingCalculated {
 	cs, mm := contractSizeAndMargin(l)
 
+	// Standardna formula: Change% = ((LastPrice - PreviousClose) / PreviousClose) * 100
+	// PreviousClose se izvodi kao: LastPrice - AbsoluteChange
+	// Zaštita od deljenja nulom: ako je PreviousClose == 0, vraća se 0%.
 	changePercent := 0.0
-	if prev := l.Price - change; prev != 0 {
-		changePercent = 100 * change / prev
+	if previousClose := l.Price - change; previousClose != 0 {
+		changePercent = ((l.Price - previousClose) / previousClose) * 100
 	}
 
 	return domain.ListingCalculated{

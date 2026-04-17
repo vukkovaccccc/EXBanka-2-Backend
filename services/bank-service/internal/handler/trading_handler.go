@@ -68,11 +68,12 @@ func tradingError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, trading.ErrInsufficientFunds):
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, trading.ErrListingTypeNotAllowed):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, trading.ErrLimitPriceRequired),
 		errors.Is(err, trading.ErrStopPriceRequired),
 		errors.Is(err, trading.ErrInvalidOrderType),
-		errors.Is(err, trading.ErrInvalidDirection),
-		errors.Is(err, trading.ErrListingTypeNotAllowed):
+		errors.Is(err, trading.ErrInvalidDirection):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, trading.ErrSettlementDatePassed):
 		return status.Error(codes.FailedPrecondition, err.Error())
@@ -217,6 +218,7 @@ func (h *BankHandler) TradingCreateOrder(ctx context.Context, req *pb.TradingCre
 		Margin:       req.GetMargin(),
 		IsSupervisor: isSupervisor,
 		IsClient:     isClient,
+		// IsForex se postavlja nakon što dohvatimo listing — videti ispod.
 	}
 
 	ppu, err := parseOptionalDecimal(req.PricePerUnit, "price_per_unit")
@@ -241,17 +243,23 @@ func (h *BankHandler) TradingCreateOrder(ctx context.Context, req *pb.TradingCre
 		return nil, status.Errorf(codes.Internal, "greška pri dohvatu hartije: %v", err)
 	}
 
-	// Klijenti mogu trgovati samo akcijama i futures-ima (spec §2).
+	// Postavi IsForex flag — service layer koristi za preskok ownership/funds/reservation provjera.
+	domainReq.IsForex = listing.ListingType == domain.ListingTypeForex
+
+	// Klijenti ne mogu da trguju FOREX instrumentima.
 	if claims.UserType == "CLIENT" {
-		if listing.ListingType != domain.ListingTypeStock && listing.ListingType != domain.ListingTypeFuture {
+		if listing.ListingType == domain.ListingTypeForex {
 			return nil, tradingError(trading.ErrListingTypeNotAllowed)
 		}
 	}
 
-	// Automatsko odbijanje za istekle FUTURE/OPTION instrumente (spec §7).
+	// Istekle hartije (FUTURE/OPTION): nalog se kreira ali dobija status DECLINED odmah.
+	// Ne vraćamo grešku — klijent dobija nalog u bazi sa audit trailom.
 	if listing.ListingType == domain.ListingTypeFuture || listing.ListingType == domain.ListingTypeOption {
 		if expired := settlementDateExpired(listing.DetailsJSON); expired {
-			return nil, tradingError(trading.ErrSettlementDatePassed)
+			reason := trading.DeclinedBySettlementExpiry
+			domainReq.SettlementExpired = true
+			domainReq.ApprovedByOverride = &reason
 		}
 	}
 
@@ -362,12 +370,28 @@ func (h *BankHandler) TradingListOrders(ctx context.Context, req *pb.TradingList
 // =============================================================================
 
 // TradingApproveOrder transitions a PENDING order to APPROVED.
-// Auth: EMPLOYEE only.
+// Auth: SUPERVISOR or ADMIN only — regular agents may not self-approve.
 // Mapped to: POST /bank/trading/orders/{order_id}/approve
 func (h *BankHandler) TradingApproveOrder(ctx context.Context, req *pb.TradingApproveOrderRequest) (*pb.TradingApproveOrderResponse, error) {
 	supervisorID, err := extractEmployeeID(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Enforce SUPERVISOR-only: regular agents (EMPLOYEE without SUPERVISOR permission)
+	// must not be able to approve orders — only supervisors and admins may do so.
+	claims, _ := auth.ClaimsFromContext(ctx)
+	if claims.UserType != "ADMIN" {
+		isSupervisor := false
+		for _, p := range claims.Permissions {
+			if p == "SUPERVISOR" {
+				isSupervisor = true
+				break
+			}
+		}
+		if !isSupervisor {
+			return nil, status.Error(codes.PermissionDenied, "samo supervizori mogu odobravati naloge")
+		}
 	}
 
 	order, err := h.tradingService.ApproveOrder(ctx, req.GetOrderId(), supervisorID)
@@ -382,12 +406,27 @@ func (h *BankHandler) TradingApproveOrder(ctx context.Context, req *pb.TradingAp
 // =============================================================================
 
 // TradingDeclineOrder transitions a PENDING order to DECLINED.
-// Auth: EMPLOYEE only.
+// Auth: SUPERVISOR or ADMIN only — regular agents may not decline other orders.
 // Mapped to: POST /bank/trading/orders/{order_id}/decline
 func (h *BankHandler) TradingDeclineOrder(ctx context.Context, req *pb.TradingDeclineOrderRequest) (*pb.TradingDeclineOrderResponse, error) {
 	supervisorID, err := extractEmployeeID(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Enforce SUPERVISOR-only: regular agents must not be able to decline orders.
+	claims, _ := auth.ClaimsFromContext(ctx)
+	if claims.UserType != "ADMIN" {
+		isSupervisor := false
+		for _, p := range claims.Permissions {
+			if p == "SUPERVISOR" {
+				isSupervisor = true
+				break
+			}
+		}
+		if !isSupervisor {
+			return nil, status.Error(codes.PermissionDenied, "samo supervizori mogu odbijati naloge")
+		}
 	}
 
 	order, err := h.tradingService.DeclineOrder(ctx, req.GetOrderId(), supervisorID)
@@ -402,7 +441,7 @@ func (h *BankHandler) TradingDeclineOrder(ctx context.Context, req *pb.TradingDe
 // =============================================================================
 
 // TradingCancelOrder stops an active (PENDING or APPROVED) order.
-// Auth: the order's owner OR any EMPLOYEE.
+// Auth: the order's owner OR any EMPLOYEE with SUPERVISOR permission (or ADMIN).
 // Mapped to: POST /bank/trading/orders/{order_id}/cancel
 func (h *BankHandler) TradingCancelOrder(ctx context.Context, req *pb.TradingCancelOrderRequest) (*pb.TradingCancelOrderResponse, error) {
 	claims, ok := auth.ClaimsFromContext(ctx)
@@ -414,7 +453,20 @@ func (h *BankHandler) TradingCancelOrder(ctx context.Context, req *pb.TradingCan
 		return nil, status.Errorf(codes.Internal, "neispravan korisnički ID u tokenu: %v", err)
 	}
 
-	order, err := h.tradingService.CancelOrder(ctx, req.GetOrderId(), callerID)
+	// JWT je autoritativni izvor za supervisor status (isto kao u TradingCreateOrder).
+	// Prosljeđivanje flaga sprječava da zastareli actuary_info zapisi blokiraju
+	// legitimne supervisore koji imaju ispravnu JWT permisiju.
+	isSupervisor := claims.UserType == "ADMIN"
+	if !isSupervisor {
+		for _, p := range claims.Permissions {
+			if p == "SUPERVISOR" {
+				isSupervisor = true
+				break
+			}
+		}
+	}
+
+	order, err := h.tradingService.CancelOrder(ctx, req.GetOrderId(), callerID, isSupervisor)
 	if err != nil {
 		return nil, tradingError(err)
 	}

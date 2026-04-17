@@ -139,8 +139,8 @@ func (h *BankHandler) CreateListingOrder(ctx context.Context, req *pb.CreateList
 	}
 
 	lt := calc.ListingType
-	if lt != domain.ListingTypeStock && lt != domain.ListingTypeFuture {
-		return nil, status.Error(codes.InvalidArgument, "klijent može da kupuje samo akcije i fjučerse")
+	if lt == domain.ListingTypeForex {
+		return nil, status.Error(codes.InvalidArgument, "klijent ne može da trguje FOREX instrumentima")
 	}
 
 	if req.GetAccountId() <= 0 {

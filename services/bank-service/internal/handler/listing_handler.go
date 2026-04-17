@@ -19,6 +19,10 @@ import (
 // as they appear in ticker symbols — used to decide whether a search term should be ticker-validated.
 var pureTickerRE = regexp.MustCompile(`^[A-Z0-9/]+$`)
 
+// pureLettersRE matches a string composed entirely of uppercase letters (no digits).
+// An all-letter search for OPTION type is an underlying prefix (e.g. "AAPL"), not a full OCC ticker.
+var pureLettersRE = regexp.MustCompile(`^[A-Z]+$`)
+
 // GetListings vraća paginisanu listu hartija od vrednosti sa filterima.
 // Mapped to: GET /bank/listings
 func (h *BankHandler) GetListings(ctx context.Context, req *pb.GetListingsRequest) (*pb.GetListingsResponse, error) {
@@ -64,18 +68,22 @@ func (h *BankHandler) GetListings(ctx context.Context, req *pb.GetListingsReques
 		PageSize:       req.GetPageSize(),
 	}
 
-	// Klijenti mogu da vide i trguju samo akcijama i futures-ima (spec §2)
+	// Klijenti ne vide FOREX listinge; ostale hartije (STOCK, FUTURE, OPTION) su dostupne.
 	if claims != nil && claims.UserType == "CLIENT" {
 		filter.AllowedListingTypes = []string{
 			string(domain.ListingTypeStock),
 			string(domain.ListingTypeFuture),
+			string(domain.ListingTypeOption),
 		}
 	}
 
-	// If the search term looks like a pure ticker (all-caps/digits/slash) and a specific
+	// If the search term looks like a complete ticker (all-caps/digits/slash) and a specific
 	// listing type is requested, reject searches that don't match the expected ticker format.
+	// Exception: OPTION type accepts pure-letter searches as underlying prefix
+	// (e.g. "AAPL" finds all AAPL options like "AAPL260419C00200000").
 	if search := filter.Search; search != "" && filter.ListingType != "" && pureTickerRE.MatchString(search) {
-		if !worker.ValidateTickerFormat(filter.ListingType, search) {
+		isUnderlyingPrefix := filter.ListingType == "OPTION" && pureLettersRE.MatchString(search)
+		if !isUnderlyingPrefix && !worker.ValidateTickerFormat(filter.ListingType, search) {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"neispravan format tickera %q za tip %s", search, filter.ListingType)
 		}

@@ -3,9 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -14,6 +17,14 @@ import (
 )
 
 // ─── Worker ──────────────────────────────────────────────────────────────────
+
+// PriceTickPublisher is an optional sink for listing price updates.
+// It is called after every successful price save inside saveWithDetails.
+// Implementations must be non-blocking (e.g. use buffered channels internally).
+// The concrete implementation lives in internal/trading/worker.PriceTickBus.
+type PriceTickPublisher interface {
+	Publish(listingID int64, ask, bid float64)
+}
 
 // ListingRefresherWorker periodično osvežava cene hartija od vrednosti.
 //
@@ -34,6 +45,9 @@ type ListingRefresherWorker struct {
 	avLastDaily map[int64]time.Time // throttle: AV Company Overview jednom dnevno
 	// requireLiveQuotes: ako true (podrazumevano), bez mock/sintetike — preskoči ažuriranje ako API nema podatke.
 	requireLiveQuotes bool
+	// tickPublisher, ako je postavljen, prima obaveštenje o svakom uspešno sačuvanom
+	// cenovnom ažuriranju.  Koristi ga trading engine za event-driven LIMIT okidanje.
+	tickPublisher PriceTickPublisher // može biti nil
 }
 
 func NewListingRefresherWorker(
@@ -43,6 +57,7 @@ func NewListingRefresherWorker(
 	finnhubAPIKey string,
 	alphaVantageKey string,
 	requireLiveQuotes bool,
+	tickPublisher PriceTickPublisher, // može biti nil; ako je postavljen, šalje cenovne tikove trading engine-u
 ) *ListingRefresherWorker {
 	var ec *eodhdClient
 	if eodhd_api_key != "" {
@@ -82,12 +97,14 @@ func NewListingRefresherWorker(
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 		avLastDaily:       make(map[int64]time.Time),
 		requireLiveQuotes: requireLiveQuotes,
+		tickPublisher:     tickPublisher,
 	}
 }
 
 // Start pokreće worker petlju. Blokira dok se ctx ne otkaže.
 func (w *ListingRefresherWorker) Start(ctx context.Context) {
 	log.Printf("[worker] ListingRefresherWorker pokrenut (interval=%s)", w.interval)
+	w.initOptionListings(ctx)
 	w.run(ctx)
 
 	ticker := time.NewTicker(w.interval)
@@ -116,10 +133,18 @@ func (w *ListingRefresherWorker) run(ctx context.Context) {
 	}
 
 	now := time.Now().UTC()
-	refreshed := 0
 
+	// Keš cena svih stock listinga — koristi se u refreshOptionWithBS
+	// umesto N×GetByID poziva (jednom po ciklusu, ne po opciji).
+	stockPrices := make(map[int64]float64, len(listings))
 	for _, l := range listings {
-		// Validate ticker format before processing
+		if l.ListingType == domain.ListingTypeStock && l.Price > 0 {
+			stockPrices[l.ID] = l.Price
+		}
+	}
+
+	refreshed := 0
+	for _, l := range listings {
 		if !ValidateTickerFormat(string(l.ListingType), l.Ticker) {
 			log.Printf("[worker] ListingRefresher: neispravan format tickera %q (tip=%s) — preskačem", l.Ticker, l.ListingType)
 			continue
@@ -133,13 +158,19 @@ func (w *ListingRefresherWorker) run(ctx context.Context) {
 		case domain.ListingTypeFuture:
 			w.refreshFuture(ctx, l, now)
 		case domain.ListingTypeOption:
-			w.refreshOption(ctx, l, now)
+			// Opcije se osvežavaju direktno BS-om (bez Yahoo pokušaja):
+			// naši BS tickeri imaju rolling expiry datume koji ne postoje
+			// u Yahoo-ovom standardnom lancu, pa bi Yahoo uvek vratio grešku.
+			w.refreshOptionWithBS(ctx, l, now, stockPrices)
+			// Bez 300ms rate-limit sleep-a za opcije — nema external API poziva
+			refreshed++
+			continue
 		default:
 			log.Printf("[worker] ListingRefresher: nepoznat tip %q za %s — preskačem", l.ListingType, l.Ticker)
 			continue
 		}
 		refreshed++
-		// Globalni rate-limit: max ~3 zahteva/sec, sigurno ispod Finnhub 60/min
+		// Rate-limit samo za external API tipove (STOCK/FOREX/FUTURE)
 		time.Sleep(300 * time.Millisecond)
 	}
 
@@ -309,7 +340,15 @@ func (w *ListingRefresherWorker) fetchForexPrice(ctx context.Context, l domain.L
 	if w.eodhd != nil {
 		q, err := w.eodhd.RealTimeQuote(ctx, eodhdForexSymbol(l.Ticker))
 		if err == nil && q.Close > 0 {
-			change = q.Close - l.Price
+			// Koristimo PreviousClose iz API odgovora za standardnu formulu:
+			// Change = LastPrice - PreviousClose
+			// Ne koristimo l.Price jer se ažurira svakim refresh ciklusom,
+			// a ne čuva stvarni prethodni dnevni zatvarač.
+			if q.PreviousClose > 0 {
+				change = q.Close - q.PreviousClose
+			} else {
+				change = q.Change
+			}
 			ask = q.Ask
 			bid = q.Bid
 			if ask <= 0 || bid <= 0 {
@@ -328,7 +367,9 @@ func (w *ListingRefresherWorker) fetchForexPrice(ctx context.Context, l domain.L
 		rate, err := w.av.ForexRate(ctx, base, quote)
 		time.Sleep(500 * time.Millisecond)
 		if err == nil && rate.ExchangeRate > 0 {
-			change = rate.ExchangeRate - l.Price
+			// AlphaVantage ne vraća PreviousClose za Forex; dnevna promena
+			// biće ispravno izračunata u sledećem EODHD osvežavanju.
+			change = 0
 			log.Printf("[worker] FOREX %s = %.5f [AV]", l.Ticker, rate.ExchangeRate)
 			return rate.ExchangeRate, rate.AskPrice, rate.BidPrice, change
 		}
@@ -341,7 +382,12 @@ func (w *ListingRefresherWorker) fetchForexPrice(ctx context.Context, l domain.L
 		q, err := w.finnhub.Quote(ctx, symbol)
 		if err == nil && q.C > 0 {
 			spread := q.C * 0.0005
-			change = q.D
+			// Finnhub vraća q.Pc (previous close) — koristimo za standardnu formulu
+			if q.Pc > 0 {
+				change = q.C - q.Pc
+			} else {
+				change = q.D
+			}
 			log.Printf("[worker] FOREX %s = %.5f [Finnhub]", l.Ticker, q.C)
 			return q.C, q.C + spread, q.C - spread, change
 		}
@@ -459,7 +505,14 @@ func (w *ListingRefresherWorker) refreshFuture(ctx context.Context, l domain.Lis
 		q, err := w.eodhd.RealTimeQuote(ctx, commSymbol)
 		if err == nil && q.Close > 0 {
 			price = q.Close
-			change = q.Change
+			// Preferujemo eksplicitno: Change = LastPrice - PreviousClose.
+			// q.Change od EODHD može biti 0 za futures kada je tržište zatvoreno
+			// ili API ne popuni to polje; q.PreviousClose je pouzdaniji izvor.
+			if q.PreviousClose > 0 {
+				change = q.Close - q.PreviousClose
+			} else {
+				change = q.Change
+			}
 			ask = q.Ask
 			bid = q.Bid
 			if ask <= 0 || bid <= 0 {
@@ -545,126 +598,10 @@ func (w *ListingRefresherWorker) refreshFuture(ctx context.Context, l domain.Lis
 
 // ─── OPTION ──────────────────────────────────────────────────────────────────
 
-// refreshOption koristi Yahoo Finance lanac. Sa LISTING_REQUIRE_LIVE_QUOTES=true nema
-// sintetičkih cena; alternativa iz speca (BS/generisani lanac) ostaje van produkcijskog
-// puta dok se eksplicitno ne uvede kao odvojen modul — ne mešati sa live quote-om.
-func (w *ListingRefresherWorker) refreshOption(ctx context.Context, l domain.Listing, now time.Time) {
-	underlying := extractOptionUnderlying(l.Ticker)
-	if underlying == "" {
-		log.Printf("[worker] OPTION %s: ne mogu izvući underlying ticker", l.Ticker)
-		w.optionFallbackOrSkip(ctx, l, now)
-		return
-	}
-
-	yahooResp, err := fetchYahooOptions(ctx, w.httpClient, underlying)
-	time.Sleep(500 * time.Millisecond) // Yahoo rate-limit pauza
-	if err != nil {
-		log.Printf("[worker] OPTION %s: Yahoo greška: %v", l.Ticker, err)
-		w.optionFallbackOrSkip(ctx, l, now)
-		return
-	}
-
-	if len(yahooResp.OptionChain.Result) == 0 {
-		log.Printf("[worker] OPTION %s: Yahoo prazan odgovor", l.Ticker)
-		w.optionFallbackOrSkip(ctx, l, now)
-		return
-	}
-
-	result := yahooResp.OptionChain.Result[0]
-	underlyingPrice := result.Quote.RegularMarketPrice
-
-	// Pronaći kontrakt koji odgovara našem tickeru u calls i puts
-	var contract *yahooContract
-	for i := range result.Options {
-		for j := range result.Options[i].Calls {
-			if strings.EqualFold(result.Options[i].Calls[j].ContractSymbol, l.Ticker) {
-				c := result.Options[i].Calls[j]
-				contract = &c
-				break
-			}
-		}
-		if contract == nil {
-			for j := range result.Options[i].Puts {
-				if strings.EqualFold(result.Options[i].Puts[j].ContractSymbol, l.Ticker) {
-					c := result.Options[i].Puts[j]
-					contract = &c
-					break
-				}
-			}
-		}
-		if contract != nil {
-			break
-		}
-	}
-
-	if contract == nil {
-		log.Printf("[worker] OPTION %s: kontrakt nije pronađen u Yahoo lancu (underlying=%s)", l.Ticker, underlying)
-		w.optionFallbackOrSkip(ctx, l, now)
-		return
-	}
-
-	price := contract.LastPrice
-	ask := contract.Ask
-	bid := contract.Bid
-	volume := contract.Volume
-	if price == 0 {
-		price = (ask + bid) / 2
-	}
-	change := price - l.Price
-
-	// Ažurirati DetailsJSON: underlying_price, implied_volatility, open_interest
-	m := parseJSONMap(l.DetailsJSON)
-	if underlyingPrice > 0 {
-		m["underlying_price"] = underlyingPrice
-	}
-	m["implied_volatility"] = contract.ImpliedVolatility
-	m["open_interest"] = contract.OpenInterest
-
-	detailsJSON := ""
-	if b, err := json.Marshal(m); err == nil {
-		detailsJSON = string(b)
-	}
-
-	if err := w.saveWithDetails(ctx, l, price, ask, bid, volume, now, detailsJSON); err != nil {
-		log.Printf("[worker] OPTION %s: greška pri čuvanju: %v", l.Ticker, err)
-		return
-	}
-
-	daily := domain.ListingDailyPriceInfo{
-		ListingID: l.ID, Date: now,
-		Price: price, AskHigh: ask, BidLow: bid,
-		PriceChange: change, Volume: volume,
-	}
-	if err := w.repo.AppendDailyPrice(ctx, daily); err != nil {
-		log.Printf("[worker] OPTION %s: greška pri upisu dnevne cene: %v", l.Ticker, err)
-	}
-
-	log.Printf("[worker] OPTION %s = $%.4f (IV=%.4f, OI=%d, underlying=%s $%.2f)",
-		l.Ticker, price, contract.ImpliedVolatility, contract.OpenInterest, underlying, underlyingPrice)
-}
-
-// optionFallbackOrSkip: uz REQUIRE_LIVE ne upisuje sintetičke cene; inače mock za dev.
-func (w *ListingRefresherWorker) optionFallbackOrSkip(ctx context.Context, l domain.Listing, now time.Time) {
-	if w.requireLiveQuotes {
-		log.Printf("[worker] OPTION %s: preskačem ažuriranje (REQUIRE_LIVE, bez Yahoo/mock)", l.Ticker)
-		return
-	}
-	price, ask, bid, volume, change := mockPrice(l)
-	if err := w.repo.UpdatePrices(ctx, l.ID, price, ask, bid, volume, now); err != nil {
-		log.Printf("[worker] OPTION %s: greška pri mock čuvanju: %v", l.Ticker, err)
-		return
-	}
-	daily := domain.ListingDailyPriceInfo{
-		ListingID: l.ID, Date: now,
-		Price: price, AskHigh: ask, BidLow: bid,
-		PriceChange: change, Volume: volume,
-	}
-	_ = w.repo.AppendDailyPrice(ctx, daily)
-}
-
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 // saveWithDetails poziva UpdatePrices, i ako details nije prazan, ažurira i DetailsJSON.
+// Nakon uspešnog čuvanja objavljuje cenovni tik trading engine-u (event-driven LIMIT okidanje).
 func (w *ListingRefresherWorker) saveWithDetails(
 	ctx context.Context, l domain.Listing,
 	price, ask, bid float64, volume int64, at time.Time,
@@ -677,6 +614,10 @@ func (w *ListingRefresherWorker) saveWithDetails(
 		if err := w.repo.UpdateDetails(ctx, l.ID, details); err != nil {
 			log.Printf("[worker] %s: greška pri ažuriranju details_json: %v", l.Ticker, err)
 		}
+	}
+	// Obavesti trading engine o novim cenama kako bi odmah proverio LIMIT uslove.
+	if w.tickPublisher != nil && ask > 0 && bid > 0 {
+		w.tickPublisher.Publish(l.ID, ask, bid)
 	}
 	return nil
 }
@@ -853,6 +794,232 @@ func parseJSONMap(detailsJSON string) map[string]any {
 	}
 	_ = json.Unmarshal([]byte(detailsJSON), &m)
 	return m
+}
+
+// optionMaxUnderlyings je maksimalan broj stock-ova za koje se generišu opcije.
+// U realnim tržištima options postoje samo za najlikvidnije akcije.
+// 5 stockova × 264 opcije = 1320 option listinga ukupno.
+const optionMaxUnderlyings = 5
+
+// ─── Option seeder (Black-Scholes, per specifikacija Pristup 2) ──────────────
+
+// initOptionListings se poziva jednom pri pokretanju workera.
+// Generiše opcijski lanac za top N stockova po volumenu koji još nemaju opcije,
+// koristeći Black-Scholes model per specifikacije:
+// 12 datuma isteka × 11 strike cena × 2 tipa (CALL+PUT) = 264 opcije po stock-u.
+func (w *ListingRefresherWorker) initOptionListings(ctx context.Context) {
+	all, err := w.repo.ListAll(ctx)
+	if err != nil {
+		log.Printf("[worker] initOptionListings: greška pri učitavanju listinga: %v", err)
+		return
+	}
+
+	// Skupi underlying tickers za koje OPTION listinzi već postoje
+	seededUnderlyings := make(map[string]bool)
+	var stocks []domain.Listing
+	for _, l := range all {
+		switch l.ListingType {
+		case domain.ListingTypeOption:
+			u := extractOptionUnderlying(l.Ticker)
+			if u != "" {
+				seededUnderlyings[u] = true
+			}
+		case domain.ListingTypeStock:
+			if l.Price > 0 {
+				stocks = append(stocks, l)
+			}
+		}
+	}
+
+	// Sortiraj po volumenu opadajuće — opcije generišemo samo za najlikvidnije
+	sort.Slice(stocks, func(i, j int) bool {
+		return stocks[i].Volume > stocks[j].Volume
+	})
+
+	now := time.Now().UTC()
+	seeded := 0
+	for _, stock := range stocks {
+		if seeded >= optionMaxUnderlyings {
+			break
+		}
+		if seededUnderlyings[stock.Ticker] {
+			seeded++ // već postoji, ali se računa u kvotu
+			continue
+		}
+		w.seedOptionsForStock(ctx, stock, now)
+		seeded++
+	}
+}
+
+// seedOptionsForStock generiše opcijski lanac za datu akciju koristeći Black-Scholes model.
+//
+// Datumi isteka i strike cene se određuju po specifikaciji (Pristup 2):
+//   - 12 datuma isteka (6 kratkoročnih svakih 6 dana + 6 dugoročnih svakih 30 dana)
+//   - 11 strike cena (5 ispod + ATM + 5 iznad, sa korakom od 1)
+//   - Cena: Black-Scholes sa IV=1.0 (per spec)
+func (w *ListingRefresherWorker) seedOptionsForStock(ctx context.Context, stock domain.Listing, now time.Time) {
+	expiries := GenerateOptionExpiries(now)
+	strikes := GenerateStrikes(stock.Price)
+
+	created, skipped := 0, 0
+	for _, expiry := range expiries {
+		// T u godinama: koristimo Duration direktno (DST-otporno) i 365.25 (leap-year-ispravno)
+		T := float64(expiry.Sub(now)) / float64(365.25*24*float64(time.Hour))
+		for _, strike := range strikes {
+			if strike <= 0 {
+				skipped += 2 // call + put
+				continue
+			}
+			callPrice := BSCall(stock.Price, strike, bsRiskFreeRate, T, bsIV)
+			putPrice := BSPut(stock.Price, strike, bsRiskFreeRate, T, bsIV)
+
+			if w.createBSOptionListing(ctx, stock, expiry, strike, "CALL", callPrice, now) {
+				created++
+			} else {
+				skipped++
+			}
+			if w.createBSOptionListing(ctx, stock, expiry, strike, "PUT", putPrice, now) {
+				created++
+			} else {
+				skipped++
+			}
+		}
+	}
+
+	log.Printf("[worker] seedOptionsForStock %s: kreirano=%d preskočeno=%d (BS, S=%.2f, IV=%.0f%%)",
+		stock.Ticker, created, skipped, stock.Price, bsIV*100)
+}
+
+// createBSOptionListing upisuje jedan Black-Scholes opcijski ugovor kao novi listing.
+// Vraća true ako je red uspešno kreiran.
+func (w *ListingRefresherWorker) createBSOptionListing(
+	ctx context.Context,
+	stock domain.Listing,
+	expiry time.Time,
+	strike float64,
+	optType string,
+	price float64,
+	now time.Time,
+) bool {
+	isCall := optType == "CALL"
+	ticker := OCCTicker(stock.Ticker, expiry, isCall, strike)
+	if occTickerLen(stock.Ticker) > 20 {
+		// Ticker bi prelazio VARCHAR(20) — preskačemo ovaj underlying
+		return false
+	}
+
+	spread := BSSpread(price)
+	bid := math.Max(price-spread, bsMinPrice)
+	ask := price + spread
+
+	details := domain.OptionDetails{
+		OptionType:        optType,
+		StrikePrice:       strike,
+		SettlementDate:    expiry.Format("2006-01-02"),
+		StockListingID:    stock.ID,
+		UnderlyingPrice:   stock.Price,
+		ImpliedVolatility: bsIV,
+		OpenInterest:      0,
+		InitialPrice:      price,
+	}
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		return false
+	}
+
+	name := fmt.Sprintf("%s %s $%.2f %s", stock.Ticker, optType, strike, expiry.Format("2006-01-02"))
+
+	l := domain.Listing{
+		Ticker:      ticker,
+		Name:        name,
+		ExchangeID:  stock.ExchangeID,
+		ListingType: domain.ListingTypeOption,
+		Price:       price,
+		Ask:         ask,
+		Bid:         bid,
+		Volume:      0,
+		DetailsJSON: string(detailsBytes),
+	}
+
+	if _, err := w.repo.Create(ctx, l); err != nil {
+		log.Printf("[worker] createBSOptionListing %s: greška upisa: %v", ticker, err)
+		return false
+	}
+	return true
+}
+
+// refreshOptionWithBS osveži cenu postojeće opcije koristeći Black-Scholes.
+// Poziva se kada Yahoo Finance nije dostupan.
+// Dohvata aktuelnu cenu underlying akcije iz baze (via stock_listing_id).
+func (w *ListingRefresherWorker) refreshOptionWithBS(ctx context.Context, l domain.Listing, now time.Time, stockPrices map[int64]float64) {
+	var details domain.OptionDetails
+	if err := json.Unmarshal([]byte(l.DetailsJSON), &details); err != nil || details.StrikePrice <= 0 {
+		return
+	}
+
+	expiryDate, err := time.Parse("2006-01-02", details.SettlementDate)
+	if err != nil {
+		return
+	}
+	T := float64(expiryDate.Sub(now)) / float64(365.25*24*float64(time.Hour))
+	if T <= 0 {
+		return // opcija je istekla
+	}
+
+	// Dohvati aktuelnu cenu underlying-a iz keša (jednom učitan po ciklusu)
+	underlyingPrice := details.UnderlyingPrice
+	if details.StockListingID > 0 {
+		if p, ok := stockPrices[details.StockListingID]; ok && p > 0 {
+			underlyingPrice = p
+		}
+	}
+	if underlyingPrice <= 0 {
+		return
+	}
+
+	var newPrice float64
+	if details.OptionType == "CALL" {
+		newPrice = BSCall(underlyingPrice, details.StrikePrice, bsRiskFreeRate, T, bsIV)
+	} else {
+		newPrice = BSPut(underlyingPrice, details.StrikePrice, bsRiskFreeRate, T, bsIV)
+	}
+
+	spread := BSSpread(newPrice)
+	bid := math.Max(newPrice-spread, bsMinPrice)
+
+	// Promena se računa u odnosu na početnu seed cenu (InitialPrice),
+	// a ne u odnosu na prethodnu vrednost iz ciklusa (l.Price).
+	// Ovo daje smislenu % promenu koja odražava kretanje underlying-a od trenutka kreiranja opcije.
+	// Fallback na l.Price za opcije koje su seedirane pre uvođenja initial_price polja.
+	referencePrice := details.InitialPrice
+	if referencePrice <= 0 {
+		referencePrice = l.Price
+	}
+	change := newPrice - referencePrice
+
+	// Ažuriraj cene i underlying_price u details_json
+	details.UnderlyingPrice = underlyingPrice
+	if detailsBytes, err := json.Marshal(details); err == nil {
+		_ = w.repo.UpdateDetails(ctx, l.ID, string(detailsBytes))
+	}
+
+	if err := w.repo.UpdatePrices(ctx, l.ID, newPrice, newPrice+spread, bid, l.Volume, now); err != nil {
+		log.Printf("[worker] OPTION %s: BS osvežavanje greška: %v", l.Ticker, err)
+		return
+	}
+	if w.tickPublisher != nil && newPrice+spread > 0 && bid > 0 {
+		w.tickPublisher.Publish(l.ID, newPrice+spread, bid)
+	}
+
+	daily := domain.ListingDailyPriceInfo{
+		ListingID: l.ID, Date: now,
+		Price: newPrice, AskHigh: newPrice + spread, BidLow: bid,
+		PriceChange: change, Volume: l.Volume,
+	}
+	_ = w.repo.AppendDailyPrice(ctx, daily)
+
+	log.Printf("[worker] OPTION %s = $%.4f (BS, K=%.2f, T=%.4f, S=%.2f)",
+		l.Ticker, newPrice, details.StrikePrice, T, underlyingPrice)
 }
 
 // ─── Mock fallback ────────────────────────────────────────────────────────────

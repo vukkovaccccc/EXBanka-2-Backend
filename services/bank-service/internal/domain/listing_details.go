@@ -32,8 +32,14 @@ type FutureDetails struct {
 
 // OptionDetails sadrži specifična polja za hartije tipa OPTION.
 type OptionDetails struct {
-	ImpliedVolatility float64 `json:"implied_volatility"`
-	OpenInterest      int     `json:"open_interest"`
+	OptionType        string  `json:"option_type"`        // "CALL" or "PUT"
+	StrikePrice       float64 `json:"strike_price"`       // Cena izvršenja (u USD)
+	SettlementDate    string  `json:"settlement_date"`    // Datum dospeća (YYYY-MM-DD)
+	StockListingID    int64   `json:"stock_listing_id"`   // ID matičnog STOCK listinga
+	UnderlyingPrice   float64 `json:"underlying_price"`   // Cena underlying akcije u trenutku osvežavanja
+	ImpliedVolatility float64 `json:"implied_volatility"` // Implicirana volatilnost
+	OpenInterest      int     `json:"open_interest"`      // Otvoreni interes
+	InitialPrice      float64 `json:"initial_price"`      // BS cena u trenutku seedinga — referenca za računanje promene %
 }
 
 // ─── ValidateListingDetails ───────────────────────────────────────────────────
@@ -95,8 +101,11 @@ func ValidateListingDetails(listingType string, rawJSON []byte) error {
 		if err := json.Unmarshal(rawJSON, &d); err != nil {
 			return fmt.Errorf("invalid OPTION details JSON: %w", err)
 		}
-		if d.OpenInterest == 0 {
-			return errors.New("OPTION details: open_interest is required and must be > 0")
+		if d.OptionType != "CALL" && d.OptionType != "PUT" {
+			return errors.New("OPTION details: option_type must be 'CALL' or 'PUT'")
+		}
+		if d.StrikePrice <= 0 {
+			return errors.New("OPTION details: strike_price is required and must be > 0")
 		}
 		return nil
 

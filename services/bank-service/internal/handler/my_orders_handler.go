@@ -92,6 +92,7 @@ func (h *MyOrdersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ApprovedByLabel   string    `json:"approvedByLabel"`
 		IsDone            bool      `json:"isDone"`
 		RemainingPortions int32     `json:"remainingPortions"`
+		ExecutedQuantity  int32     `json:"executedQuantity"` // = Quantity - RemainingPortions
 		AfterHours        bool      `json:"afterHours"`
 		AllOrNone         bool      `json:"allOrNone"`
 		Margin            bool      `json:"margin"`
@@ -118,6 +119,7 @@ func (h *MyOrdersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ApprovedByLabel:   label,
 			IsDone:            o.IsDone,
 			RemainingPortions: o.RemainingPortions,
+			ExecutedQuantity:  o.Quantity - o.RemainingPortions,
 			AfterHours:        o.AfterHours,
 			AllOrNone:         o.AllOrNone,
 			Margin:            o.Margin,

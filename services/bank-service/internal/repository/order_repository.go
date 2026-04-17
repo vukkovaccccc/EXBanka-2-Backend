@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"banka-backend/services/bank-service/internal/trading"
@@ -96,6 +97,40 @@ func (m orderTransactionModel) toDomain() trading.OrderTransaction {
 	}
 }
 
+// orderAuditLogModel mapira na core_banking.order_audit_log.
+type orderAuditLogModel struct {
+	ID        int64     `gorm:"column:id;primaryKey"`
+	OrderID   int64     `gorm:"column:order_id"`
+	OldStatus *string   `gorm:"column:old_status"`
+	NewStatus string    `gorm:"column:new_status"`
+	ChangedBy *int64    `gorm:"column:changed_by"`
+	ChangedAt time.Time `gorm:"column:changed_at;autoCreateTime"`
+	Note      *string   `gorm:"column:note"`
+}
+
+func (orderAuditLogModel) TableName() string { return "core_banking.order_audit_log" }
+
+// insertAuditLog upisuje jedan zapis u order_audit_log (best-effort — ne propagira grešku).
+// db može biti transakcioni *gorm.DB kada se poziva unutar tx bloka, čime se audit log
+// upisuje atomično zajedno sa status promenom.
+func insertAuditLog(ctx context.Context, db *gorm.DB, orderID int64, oldStatus, newStatus string, changedBy *int64, note string) {
+	var oldPtr *string
+	if oldStatus != "" {
+		oldPtr = &oldStatus
+	}
+	var notePtr *string
+	if note != "" {
+		notePtr = &note
+	}
+	_ = db.WithContext(ctx).Create(&orderAuditLogModel{
+		OrderID:   orderID,
+		OldStatus: oldPtr,
+		NewStatus: newStatus,
+		ChangedBy: changedBy,
+		Note:      notePtr,
+	}).Error
+}
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 type orderRepository struct {
@@ -138,7 +173,9 @@ func (r *orderRepository) Create(ctx context.Context, req trading.CreateOrderReq
 		IsClient:          req.IsClient,
 		LastModified:      now,
 	}
-	if status == trading.OrderStatusApproved {
+	if req.ApprovedByOverride != nil {
+		m.ApprovedBy = req.ApprovedByOverride
+	} else if status == trading.OrderStatusApproved {
 		s := trading.ApprovedByNoApproval
 		m.ApprovedBy = &s
 	}
@@ -165,6 +202,13 @@ func (r *orderRepository) GetByID(ctx context.Context, id int64) (*trading.Order
 
 // UpdateStatus atomično menja status i opcionog odobravaoca naloga.
 func (r *orderRepository) UpdateStatus(ctx context.Context, id int64, status trading.OrderStatus, approvedBy *string) (*trading.Order, error) {
+	// Pre-fetch stari status za audit trail (best-effort).
+	var oldStatus string
+	var existing orderModel
+	if r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error == nil {
+		oldStatus = existing.Status
+	}
+
 	updates := map[string]interface{}{
 		"status":        string(status),
 		"last_modified": gorm.Expr("NOW()"),
@@ -183,6 +227,15 @@ func (r *orderRepository) UpdateStatus(ctx context.Context, id int64, status tra
 	if result.RowsAffected == 0 {
 		return nil, trading.ErrOrderNotFound
 	}
+
+	var changedBy *int64
+	if approvedBy != nil {
+		if uid, err := strconv.ParseInt(*approvedBy, 10, 64); err == nil {
+			changedBy = &uid
+		}
+	}
+	insertAuditLog(ctx, r.db, id, oldStatus, string(status), changedBy, "")
+
 	return r.GetByID(ctx, id)
 }
 
@@ -293,19 +346,28 @@ func (r *orderRepository) MarkDone(ctx context.Context, id int64) (*trading.Orde
 	if result.RowsAffected == 0 {
 		return nil, trading.ErrOrderNotFound
 	}
+	insertAuditLog(ctx, r.db, id, string(trading.OrderStatusApproved), string(trading.OrderStatusDone), nil, "")
 	return r.GetByID(ctx, id)
 }
 
-// Cancel atomično postavlja status=CANCELED, remaining_portions=0, is_done=true.
+// Cancel atomično postavlja status=CANCELED i is_done=true.
+// remaining_portions se namerno NE nulira — čuva se vrednost u trenutku otkazivanja
+// kako bi se moglo izračunati executedQty = Quantity - RemainingPortions.
 func (r *orderRepository) Cancel(ctx context.Context, id int64) (*trading.Order, error) {
+	// Pre-fetch stari status i količine za audit trail i note (best-effort).
+	var oldStatus string
+	var existing orderModel
+	if r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error == nil {
+		oldStatus = existing.Status
+	}
+
 	result := r.db.WithContext(ctx).
 		Model(&orderModel{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":             "CANCELED",
-			"is_done":            true,
-			"remaining_portions": 0,
-			"last_modified":      gorm.Expr("NOW()"),
+			"status":        "CANCELED",
+			"is_done":       true,
+			"last_modified": gorm.Expr("NOW()"),
 		})
 	if result.Error != nil {
 		return nil, fmt.Errorf("order cancel: %w", result.Error)
@@ -313,17 +375,34 @@ func (r *orderRepository) Cancel(ctx context.Context, id int64) (*trading.Order,
 	if result.RowsAffected == 0 {
 		return nil, trading.ErrOrderNotFound
 	}
+
+	// Napomena: koliko je parcijalno izvršeno pre otkazivanja.
+	note := ""
+	if existing.ID != 0 {
+		executedQty := existing.Quantity - existing.RemainingPortions
+		if executedQty > 0 {
+			note = fmt.Sprintf("izvršeno %d/%d", executedQty, existing.Quantity)
+		}
+	}
+	insertAuditLog(ctx, r.db, id, oldStatus, string(trading.OrderStatusCanceled), nil, note)
 	return r.GetByID(ctx, id)
 }
 
-// GetNetHoldings returns the effective quantity of a listing that a user owns
+// GetNetHoldings returns the effective number of contracts that a user owns
 // and has not yet committed to sell (via PENDING or APPROVED SELL orders).
+//
+// Quantities are counted in order units (contracts), NOT in underlying shares.
+// One option contract with contract_size=100 counts as 1 here, not 100.
 //
 // Formula:
 //
-//	net = Σ(DONE BUY * qty) − Σ(DONE SELL * qty) − Σ(PENDING|APPROVED SELL * qty, !is_done)
+//	net = Σ(DONE BUY qty)
+//	    + Σ(CANCELED BUY partial fills: qty - remaining where remaining < qty)
+//	    − Σ(DONE SELL qty)
+//	    − Σ(CANCELED SELL partial fills)
+//	    − Σ(PENDING|APPROVED SELL qty, !is_done)
 //
-// A result of 0 means the user owns nothing (or every owned share is already
+// A result of 0 means the user owns nothing (or every contract is already
 // earmarked for an active SELL order). Returns 0 on any DB error (conservative).
 func (r *orderRepository) GetNetHoldings(ctx context.Context, userID, listingID int64) (int64, error) {
 	var net int64
@@ -331,11 +410,15 @@ func (r *orderRepository) GetNetHoldings(ctx context.Context, userID, listingID 
 		SELECT COALESCE(SUM(
 			CASE
 				WHEN direction = 'BUY'  AND status = 'DONE'
-					THEN quantity * contract_size
+					THEN quantity
+				WHEN direction = 'BUY'  AND status = 'CANCELED' AND (quantity - remaining_portions) > 0
+					THEN (quantity - remaining_portions)
 				WHEN direction = 'SELL' AND status = 'DONE'
-					THEN -(quantity * contract_size)
+					THEN -(quantity)
+				WHEN direction = 'SELL' AND status = 'CANCELED' AND (quantity - remaining_portions) > 0
+					THEN -((quantity - remaining_portions))
 				WHEN direction = 'SELL' AND status IN ('PENDING','APPROVED') AND is_done = FALSE
-					THEN -(quantity * contract_size)
+					THEN -(quantity)
 				ELSE 0
 			END
 		), 0)
@@ -346,6 +429,12 @@ func (r *orderRepository) GetNetHoldings(ctx context.Context, userID, listingID 
 		return 0, fmt.Errorf("get net holdings (user=%d listing=%d): %w", userID, listingID, err)
 	}
 	return net, nil
+}
+
+// WithDB vraća novu instancu orderRepository sa datim *gorm.DB (može biti transakcija).
+// Koristi se u engine.go da sve fill operacije teku kroz isti tx blok.
+func (r *orderRepository) WithDB(db *gorm.DB) trading.OrderRepository {
+	return &orderRepository{db: db}
 }
 
 // ─── Helper ───────────────────────────────────────────────────────────────────

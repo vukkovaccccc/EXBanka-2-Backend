@@ -17,13 +17,20 @@ import (
 type fundsManager struct {
 	db              *gorm.DB
 	exchangeService domain.ExchangeService
+	// provizijaRate je stopa FX provizije koja se naplaćuje klijentima
+	// pri konverziji USD iznosa u valutu njihovog računa (npr. 0.005 = 0.5%).
+	// Odgovara EXCHANGE_PROVIZIJA_RATE konfiguracionoj vrednosti.
+	// Primenjuje se u convertUSDToAccountCurrency kada targetCurrency != "USD".
+	provizijaRate float64
 }
 
 // NewFundsManager vraća implementaciju trading.FundsManager koja direktno
 // ažurira core_banking.racun u jednoj SQL naredbi (atomično).
 // exchangeService se koristi za konverziju USD iznosa u valutu klijentskog računa.
-func NewFundsManager(db *gorm.DB, exchangeService domain.ExchangeService) trading.FundsManager {
-	return &fundsManager{db: db, exchangeService: exchangeService}
+// provizijaRate je stopa FX provizije (npr. 0.005 za 0.5%) koja se naplaćuje
+// klijentima pri svakom plaćanju u ne-USD valuti.
+func NewFundsManager(db *gorm.DB, exchangeService domain.ExchangeService, provizijaRate float64) trading.FundsManager {
+	return &fundsManager{db: db, exchangeService: exchangeService, provizijaRate: provizijaRate}
 }
 
 // accountCurrency vraća ISO kod valute za dati račun.
@@ -42,10 +49,18 @@ func (f *fundsManager) accountCurrency(ctx context.Context, accountID int64) str
 }
 
 // convertUSDToAccountCurrency konvertuje USD iznos u valutu računa.
-// Za klijente (isClient=true) koristi prodajni kurs (banka prodaje USD klijentu —
-// nepovoljniji kurs po klijenta, kao u menjačnici).
-// Za zaposlene i sistem koristi srednji kurs.
-func (f *fundsManager) convertUSDToAccountCurrency(ctx context.Context, usdAmount decimal.Decimal, targetCurrency string) decimal.Decimal {
+//
+// isDebit određuje smer provizije:
+//   - true  (klijent PLAĆA — buy, commission, reserve): klijent plaća više → × (1 + provizija)
+//   - false (klijent PRIMA — sell credit): klijent prima manje → × (1 - provizija)
+//
+// Za klijente (isClient=true):
+//   - USD → RSD: prodajni kurs USD (banka prodaje USD klijentu — nepovoljniji po klijenta)
+//   - RSD → target: kupovni kurs target valute (banka kupuje target valutu od klijenta)
+//   - Primenjuje se FX provizija u odgovarajućem smeru.
+//
+// Za zaposlene i sistem: srednji kurs, bez provizije.
+func (f *fundsManager) convertUSDToAccountCurrency(ctx context.Context, usdAmount decimal.Decimal, targetCurrency string, isDebit bool) decimal.Decimal {
 	if targetCurrency == "USD" {
 		return usdAmount
 	}
@@ -76,36 +91,70 @@ func (f *fundsManager) convertUSDToAccountCurrency(ctx context.Context, usdAmoun
 	}
 	rsdAmount := usdAmount.Mul(decimal.NewFromFloat(usdToRSD))
 
-	if targetCurrency == "RSD" {
-		return rsdAmount
+	var applyProvizija func(d decimal.Decimal) decimal.Decimal
+	if isClient && f.provizijaRate > 0 {
+		if isDebit {
+			// Klijent plaća — provizija povećava iznos koji se skida
+			applyProvizija = func(d decimal.Decimal) decimal.Decimal {
+				return d.Mul(decimal.NewFromFloat(1 + f.provizijaRate))
+			}
+		} else {
+			// Klijent prima — provizija smanjuje iznos koji se dodaje
+			applyProvizija = func(d decimal.Decimal) decimal.Decimal {
+				return d.Mul(decimal.NewFromFloat(1 - f.provizijaRate))
+			}
+		}
+	} else {
+		applyProvizija = func(d decimal.Decimal) decimal.Decimal { return d }
 	}
 
-	// RSD → target currency (uvek srednji kurs za drugu valutu)
+	if targetCurrency == "RSD" {
+		return applyProvizija(rsdAmount)
+	}
+
+	// RSD → target currency.
+	// Klijenti: kupovni kurs (banka kupuje target valutu od klijenta).
+	// Zaposleni: srednji kurs.
+	var rsdToTarget float64
 	for _, r := range rates {
-		if r.Oznaka == targetCurrency && r.Srednji > 0 {
-			return rsdAmount.Div(decimal.NewFromFloat(r.Srednji))
+		if r.Oznaka == targetCurrency {
+			if isClient && r.Kupovni > 0 {
+				rsdToTarget = r.Kupovni
+			} else if r.Srednji > 0 {
+				rsdToTarget = r.Srednji
+			}
+			break
 		}
 	}
+	if rsdToTarget <= 0 {
+		log.Printf("[funds_manager] valuta %q nije pronađena u kursnoj listi — koristi se RSD iznos", targetCurrency)
+		return applyProvizija(rsdAmount)
+	}
 
-	// Valuta nije pronađena — vrati RSD iznos kao sigurni fallback
-	log.Printf("[funds_manager] valuta %q nije pronađena u kursnoj listi — koristi se RSD iznos", targetCurrency)
-	return rsdAmount
+	return applyProvizija(rsdAmount.Div(decimal.NewFromFloat(rsdToTarget)))
 }
 
-// ReserveFunds povećava rezervisana_sredstva za dati iznos.
-// amount je u USD (valuta berze); konvertuje se u valutu računa kao i kod
-// HasSufficientFunds / SettleBuyFill — inače bi se u RSD račun dodavao sirovi USD broj.
+// ReserveFunds atomično provjerava i povećava rezervisana_sredstva u jednom SQL iskazu.
+// BUG-1 fix: Prethodni kod je radio SELECT (HasSufficientFunds) pa UPDATE (ReserveFunds)
+// kao dvije odvojene operacije — TOCTOU race je dozvoljavao over-reservation.
+// Sada jedan conditional UPDATE garantuje: provjera i rezervacija su nedjeljivi.
+// Ako slobodna sredstva (stanje − rezervisano) nisu dovoljna, RowsAffected == 0
+// i vraćamo ErrInsufficientFunds bez ikakve promjene na računu.
 func (f *fundsManager) ReserveFunds(ctx context.Context, accountID int64, usdAmount decimal.Decimal) error {
 	currency := f.accountCurrency(ctx, accountID)
-	debit := f.convertUSDToAccountCurrency(ctx, usdAmount, currency)
+	debit := f.convertUSDToAccountCurrency(ctx, usdAmount, currency, true)
 	result := f.db.WithContext(ctx).Exec(
 		`UPDATE core_banking.racun
 		 SET rezervisana_sredstva = rezervisana_sredstva + ?
-		 WHERE id = ?`,
-		debit.InexactFloat64(), accountID,
+		 WHERE id = ?
+		   AND (stanje_racuna - rezervisana_sredstva) >= ?`,
+		debit.InexactFloat64(), accountID, debit.InexactFloat64(),
 	)
 	if result.Error != nil {
 		return fmt.Errorf("rezervacija sredstava za račun %d: %w", accountID, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return trading.ErrInsufficientFunds
 	}
 	return nil
 }
@@ -114,7 +163,7 @@ func (f *fundsManager) ReserveFunds(ctx context.Context, accountID int64, usdAmo
 // amount je u USD; konvertuje se u valutu računa.
 func (f *fundsManager) ReleaseFunds(ctx context.Context, accountID int64, usdAmount decimal.Decimal) error {
 	currency := f.accountCurrency(ctx, accountID)
-	debit := f.convertUSDToAccountCurrency(ctx, usdAmount, currency)
+	debit := f.convertUSDToAccountCurrency(ctx, usdAmount, currency, true)
 	result := f.db.WithContext(ctx).Exec(
 		`UPDATE core_banking.racun
 		 SET rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
@@ -140,30 +189,40 @@ func (f *fundsManager) ReleaseFunds(ctx context.Context, accountID int64, usdAmo
 // Za zaposlene i USD račune koristi se direktno knjiženje bez posredničkih računa.
 func (f *fundsManager) SettleBuyFill(ctx context.Context, accountID int64, amount decimal.Decimal) error {
 	currency := f.accountCurrency(ctx, accountID)
-	debit := f.convertUSDToAccountCurrency(ctx, amount, currency)
+	debit := f.convertUSDToAccountCurrency(ctx, amount, currency, true)
 	isClient := tradingworker.IsClientFromCtx(ctx)
 
 	// Zaposleni ili USD račun: direktno knjiženje (bez posrednika).
+	// BUG-5 fix: Prethodni kod je radio UPDATE pa CREATE u odvojenim pozivima — ako
+	// CREATE ne uspije, saldo je već zaduzen bez audit zapisa. Sada su oboje u transakciji.
 	if !isClient || currency == "USD" {
-		result := f.db.WithContext(ctx).Exec(
-			`UPDATE core_banking.racun
-			 SET stanje_racuna        = stanje_racuna - ?,
-			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
-			 WHERE id = ?`,
-			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
-		)
-		if result.Error != nil {
-			return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, result.Error)
-		}
-		f.db.WithContext(ctx).Create(&transakcijaModel{
-			RacunID:          accountID,
-			TipTransakcije:   "ISPLATA",
-			Iznos:            debit.InexactFloat64(),
-			Opis:             "Kupovina hartije od vrednosti",
-			VremeIzvrsavanja: time.Now().UTC(),
-			Status:           "IZVRSEN",
+		return f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			res := tx.Exec(
+				`UPDATE core_banking.racun
+				 SET stanje_racuna        = stanje_racuna - ?,
+				     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
+				 WHERE id = ?
+				   AND stanje_racuna >= ?`,
+				debit.InexactFloat64(), debit.InexactFloat64(), accountID, debit.InexactFloat64(),
+			)
+			if res.Error != nil {
+				return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, res.Error)
+			}
+			if res.RowsAffected == 0 {
+				return trading.ErrInsufficientFunds
+			}
+			if err := tx.Create(&transakcijaModel{
+				RacunID:          accountID,
+				TipTransakcije:   "ISPLATA",
+				Iznos:            debit.InexactFloat64(),
+				Opis:             "Kupovina hartije od vrednosti",
+				VremeIzvrsavanja: time.Now().UTC(),
+				Status:           "IZVRSEN",
+			}).Error; err != nil {
+				return fmt.Errorf("audit zapis BUY filla za račun %d: %w", accountID, err)
+			}
+			return nil
 		})
-		return nil
 	}
 
 	// Klijent sa ne-USD računom: 3-struko knjiženje kroz bankine trezorske račune.
@@ -176,11 +235,15 @@ func (f *fundsManager) SettleBuyFill(ctx context.Context, accountID int64, amoun
 			`UPDATE core_banking.racun
 			 SET stanje_racuna        = stanje_racuna - ?,
 			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
-			 WHERE id = ?`,
-			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
+			 WHERE id = ?
+			   AND stanje_racuna >= ?`,
+			debit.InexactFloat64(), debit.InexactFloat64(), accountID, debit.InexactFloat64(),
 		)
 		if result.Error != nil {
 			return fmt.Errorf("namirenje BUY filla za račun %d: %w", accountID, result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return trading.ErrInsufficientFunds
 		}
 		f.db.WithContext(ctx).Create(&transakcijaModel{
 			RacunID:          accountID,
@@ -198,14 +261,19 @@ func (f *fundsManager) SettleBuyFill(ctx context.Context, accountID int64, amoun
 
 	return f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. Zaduži klijentski račun (stanje + rezervisana sredstva).
-		if err := tx.Exec(
+		res := tx.Exec(
 			`UPDATE core_banking.racun
 			 SET stanje_racuna        = stanje_racuna - ?,
 			     rezervisana_sredstva = GREATEST(0, rezervisana_sredstva - ?)
-			 WHERE id = ?`,
-			debit.InexactFloat64(), debit.InexactFloat64(), accountID,
-		).Error; err != nil {
-			return fmt.Errorf("zaduži klijentski račun %d: %w", accountID, err)
+			 WHERE id = ?
+			   AND stanje_racuna >= ?`,
+			debit.InexactFloat64(), debit.InexactFloat64(), accountID, debit.InexactFloat64(),
+		)
+		if res.Error != nil {
+			return fmt.Errorf("zaduži klijentski račun %d: %w", accountID, res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return trading.ErrInsufficientFunds
 		}
 
 		// 2. Odobri bankin trezor FROM (prima klijentovu valutu, npr. EUR).
@@ -262,7 +330,7 @@ func (f *fundsManager) SettleBuyFill(ctx context.Context, accountID int64, amoun
 // amount je u USD (valuta berze); konvertuje se u valutu računa pre dodavanja.
 func (f *fundsManager) CreditSellFill(ctx context.Context, accountID int64, amount decimal.Decimal) error {
 	currency := f.accountCurrency(ctx, accountID)
-	credit := f.convertUSDToAccountCurrency(ctx, amount, currency)
+	credit := f.convertUSDToAccountCurrency(ctx, amount, currency, false)
 
 	result := f.db.WithContext(ctx).Exec(
 		`UPDATE core_banking.racun
@@ -312,10 +380,37 @@ func (f *fundsManager) HasSufficientFunds(ctx context.Context, accountID int64, 
 	}
 
 	currency := f.accountCurrency(ctx, accountID)
-	required := f.convertUSDToAccountCurrency(ctx, usdAmount, currency)
+	required := f.convertUSDToAccountCurrency(ctx, usdAmount, currency, true)
 
 	slobodna := stanje.Sub(rezervisano)
 	return slobodna.GreaterThanOrEqual(required), nil
+}
+
+// HasSufficientFreeBalance vraća true kada slobodna sredstva računa (stanje − rezervisano)
+// pokrivaju traženi iznos u matičnoj valuti računa (bez konverzije).
+// Koristi se za FOREX SELL pre-validaciju.
+func (f *fundsManager) HasSufficientFreeBalance(ctx context.Context, accountID int64, required decimal.Decimal) (bool, error) {
+	var row struct {
+		StanjeRacuna        string `gorm:"column:stanje_racuna"`
+		RezervovanaSredstva string `gorm:"column:rezervisana_sredstva"`
+	}
+	err := f.db.WithContext(ctx).
+		Table("core_banking.racun").
+		Select("stanje_racuna, rezervisana_sredstva").
+		Where("id = ?", accountID).
+		First(&row).Error
+	if err != nil {
+		return false, fmt.Errorf("provjera slobodnog balansa za račun %d: %w", accountID, err)
+	}
+	stanje, err := decimal.NewFromString(row.StanjeRacuna)
+	if err != nil {
+		return false, fmt.Errorf("parse stanje_racuna: %w", err)
+	}
+	rezervisano, err := decimal.NewFromString(row.RezervovanaSredstva)
+	if err != nil {
+		return false, fmt.Errorf("parse rezervisana_sredstva: %w", err)
+	}
+	return stanje.Sub(rezervisano).GreaterThanOrEqual(required), nil
 }
 
 // ConvertUSDToRSD konvertuje USD iznos u RSD koristeći srednji kurs (bez provizije).
@@ -364,55 +459,287 @@ func (f *fundsManager) fetchCurrencyTrezorID(ctx context.Context, currencyOznaka
 	return id
 }
 
-// ChargeCommission smanjuje stanje_racuna za iznos provizije (ne dirá rezervisana_sredstva)
-// i kreira zapis u transakcija tabeli. Istovremeno uplaćuje proviziju na bankin trezor račun
-// u istoj valuti (spec: "Provizija se prebacuje na bankin račun u istoj valuti").
+// ChargeCommission naplaćuje proviziju za trading nalog.
+//
+// Klijenti: skida se sa klijentovog računa (konvertovano u valutu računa),
+// a ekvivalentni iznos se uplaćuje na bankin trezor u istoj valuti.
+//
+// Zaposleni/supervizori/agenti: skida se direktno sa bankinog USD trezor računa
+// (provizija je operativni trošak banke pri kupovini hartija).
 func (f *fundsManager) ChargeCommission(ctx context.Context, accountID int64, amount decimal.Decimal) error {
-	// ── 1. Konverzija provizije u valutu računa ───────────────────────────────
-	// amount je u USD (valuta berze). Debetujemo korisnika u valuti njegovog računa.
+	if !tradingworker.IsClientFromCtx(ctx) {
+		// Zaposleni: provizija se skida sa bankinog USD trezor računa.
+		trezorID := f.fetchCurrencyTrezorID(ctx, "USD")
+		if trezorID == 0 {
+			log.Printf("[funds_manager] bankin USD trezor nije pronađen — provizija za zaposlenog se preskače")
+			return nil
+		}
+		opis := fmt.Sprintf("Provizija za hartiju od vrednosti (%.6g USD)", amount.InexactFloat64())
+		now := time.Now().UTC()
+		return f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec(
+				`UPDATE core_banking.racun SET stanje_racuna = stanje_racuna - ? WHERE id = ?`,
+				amount.InexactFloat64(), trezorID,
+			).Error; err != nil {
+				return fmt.Errorf("naplata provizije sa USD trezora: %w", err)
+			}
+			return tx.Create(&transakcijaModel{
+				RacunID:          trezorID,
+				TipTransakcije:   "ISPLATA",
+				Iznos:            amount.InexactFloat64(),
+				Opis:             opis,
+				VremeIzvrsavanja: now,
+				Status:           "IZVRSEN",
+			}).Error
+		})
+	}
+
 	currency := f.accountCurrency(ctx, accountID)
-	debit := f.convertUSDToAccountCurrency(ctx, amount, currency)
+	debit := f.convertUSDToAccountCurrency(ctx, amount, currency, true)
 
-	// ── 2. Debetuj korisnikov račun ────────────────────────────────────────────
-	result := f.db.WithContext(ctx).Exec(
-		`UPDATE core_banking.racun
-		 SET stanje_racuna = stanje_racuna - ?
-		 WHERE id = ?`,
-		debit.InexactFloat64(), accountID,
-	)
-	if result.Error != nil {
-		return fmt.Errorf("naplata provizije za račun %d: %w", accountID, result.Error)
-	}
-	f.db.WithContext(ctx).Create(&transakcijaModel{
-		RacunID:          accountID,
-		TipTransakcije:   "ISPLATA",
-		Iznos:            debit.InexactFloat64(),
-		Opis:             "Provizija za hartiju od vrednosti",
-		VremeIzvrsavanja: time.Now().UTC(),
-		Status:           "IZVRSEN",
-	})
-
-	// ── 3. Kredituj bankin trezor račun (USD) ──────────────────────────────────
-	// Provizija se prebacuje na bankin prihodni račun u USD (valuta berze).
-	// Trezor račun je uvek u USD; amount je već u USD — nema potrebe za konverzijom.
-	trezorID := f.bankTrezorAccountID(ctx)
+	// Trezor koji odgovara valuti klijentovog računa (EUR trezor za EUR račun, itd.)
+	trezorID := f.fetchCurrencyTrezorID(ctx, currency)
 	if trezorID == 0 {
-		log.Printf("[funds_manager] bankin trezor račun nije pronađen — provizija nije prebačena")
-		return nil
+		log.Printf("[funds_manager] trezorski račun za valutu %s nije pronađen — provizija se naplaćuje bez prebacivanja", currency)
 	}
-	f.db.WithContext(ctx).Exec(
-		`UPDATE core_banking.racun
-		 SET stanje_racuna = stanje_racuna + ?
-		 WHERE id = ?`,
-		amount.InexactFloat64(), trezorID,
-	)
-	f.db.WithContext(ctx).Create(&transakcijaModel{
-		RacunID:          trezorID,
-		TipTransakcije:   "UPLATA",
-		Iznos:            amount.InexactFloat64(),
-		Opis:             "Prihod od provizije za hartiju od vrednosti",
-		VremeIzvrsavanja: time.Now().UTC(),
-		Status:           "IZVRSEN",
+
+	opis := fmt.Sprintf("Provizija za hartiju od vrednosti (%.6g USD → %.6g %s)", amount.InexactFloat64(), debit.InexactFloat64(), currency)
+	now := time.Now().UTC()
+	return f.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. Debetuj klijentov račun za konvertovani iznos provizije.
+		if err := tx.Exec(
+			`UPDATE core_banking.racun SET stanje_racuna = stanje_racuna - ? WHERE id = ?`,
+			debit.InexactFloat64(), accountID,
+		).Error; err != nil {
+			return fmt.Errorf("naplata provizije za račun %d: %w", accountID, err)
+		}
+		if err := tx.Create(&transakcijaModel{
+			RacunID:          accountID,
+			TipTransakcije:   "ISPLATA",
+			Iznos:            debit.InexactFloat64(),
+			Opis:             opis,
+			VremeIzvrsavanja: now,
+			Status:           "IZVRSEN",
+		}).Error; err != nil {
+			return fmt.Errorf("audit provizije za račun %d: %w", accountID, err)
+		}
+		if trezorID == 0 {
+			return nil
+		}
+		// 2. Kredituj bankin trezor u istoj valuti (EUR → EUR trezor, USD → USD trezor).
+		if err := tx.Exec(
+			`UPDATE core_banking.racun SET stanje_racuna = stanje_racuna + ? WHERE id = ?`,
+			debit.InexactFloat64(), trezorID,
+		).Error; err != nil {
+			return fmt.Errorf("kredit trezora za proviziju: %w", err)
+		}
+		if err := tx.Create(&transakcijaModel{
+			RacunID:          trezorID,
+			TipTransakcije:   "UPLATA",
+			Iznos:            debit.InexactFloat64(),
+			Opis:             opis,
+			VremeIzvrsavanja: now,
+			Status:           "IZVRSEN",
+		}).Error; err != nil {
+			return fmt.Errorf("audit provizije za trezor: %w", err)
+		}
+		return nil
 	})
+}
+
+// ForexSwap atomically executes a currency swap for a forex order.
+//
+// BUY  BASE/QUOTE: debit (nominalBase × rate) from QUOTE account → credit nominalBase to BASE account.
+// SELL BASE/QUOTE: debit nominalBase from BASE account → credit (nominalBase × rate) to QUOTE account.
+//
+// fromAccountID is the AccountID stored on the order (the user's "debit" account).
+// The counterpart account is located by looking up the user's active account for the
+// other currency. Both accounts are locked in id-ASC order before balances are checked.
+//
+// Returns trading.ErrForex* / trading.ErrInsufficientFunds for business-rule violations
+// (caller should Decline the order). Other errors indicate unexpected DB failures.
+func (f *fundsManager) ForexSwap(
+	ctx context.Context,
+	userID int64,
+	fromAccountID int64,
+	baseCurrency, quoteCurrency string,
+	nominalBase, rate decimal.Decimal,
+	direction trading.OrderDirection,
+) error {
+	if baseCurrency == quoteCurrency {
+		return trading.ErrForexSameCurrency
+	}
+
+	// Determine which currency to debit / credit and compute amounts.
+	var debitCurrency, creditCurrency string
+	var debitAmount, creditAmount decimal.Decimal
+	if direction == trading.OrderDirectionBuy {
+		debitCurrency = quoteCurrency
+		creditCurrency = baseCurrency
+		debitAmount = nominalBase.Mul(rate)
+		creditAmount = nominalBase
+	} else {
+		debitCurrency = baseCurrency
+		creditCurrency = quoteCurrency
+		debitAmount = nominalBase
+		creditAmount = nominalBase.Mul(rate)
+	}
+
+	type accountInfo struct {
+		ID       int64  `gorm:"column:id"`
+		OwnerID  int64  `gorm:"column:id_vlasnika"`
+		Currency string `gorm:"column:oznaka"`
+	}
+
+	isClient := tradingworker.IsClientFromCtx(ctx)
+
+	// ── Resolve from/to accounts ───────────────────────────────────────────────
+	// Zaposleni (supervizori/agenti): uvek koriste bankine trezorske račune
+	// (id_vlasnika=2, trezor@exbanka.rs). Frontend ne mora da zna tačan accountId —
+	// nalazimo račune automatski po valuti.
+	//
+	// Klijenti: fromAccountID mora da pripada korisniku i da ima ispravnu valutu;
+	// counterpart (credit) se traži među korisnikovim aktivnim računima.
+	var fromAcc, toAcc accountInfo
+
+	if !isClient {
+		// ── Zaposleni / Admin: trezorski računi ───────────────────────────────
+		if err := f.db.WithContext(ctx).Raw(`
+			SELECT r.id, r.id_vlasnika, v.oznaka
+			FROM core_banking.racun r
+			JOIN core_banking.valuta v ON v.id = r.id_valute
+			WHERE r.id_vlasnika = 2 AND v.oznaka = ? AND r.status = 'AKTIVAN'
+			ORDER BY r.id LIMIT 1
+		`, debitCurrency).Scan(&fromAcc).Error; err != nil || fromAcc.ID == 0 {
+			return trading.ErrForexAccountNotFound
+		}
+		if err := f.db.WithContext(ctx).Raw(`
+			SELECT r.id, r.id_vlasnika, v.oznaka
+			FROM core_banking.racun r
+			JOIN core_banking.valuta v ON v.id = r.id_valute
+			WHERE r.id_vlasnika = 2 AND v.oznaka = ? AND r.status = 'AKTIVAN'
+			ORDER BY r.id LIMIT 1
+		`, creditCurrency).Scan(&toAcc).Error; err != nil || toAcc.ID == 0 {
+			return trading.ErrForexAccountNotFound
+		}
+	} else {
+		// ── Klijent: fromAccountID mora da pripada korisniku ──────────────────
+		if err := f.db.WithContext(ctx).Raw(`
+			SELECT r.id, r.id_vlasnika, v.oznaka
+			FROM core_banking.racun r
+			JOIN core_banking.valuta v ON v.id = r.id_valute
+			WHERE r.id = ?
+		`, fromAccountID).Scan(&fromAcc).Error; err != nil || fromAcc.ID == 0 {
+			return trading.ErrForexAccountNotFound
+		}
+		if fromAcc.OwnerID != userID {
+			return trading.ErrForexAccountNotFound
+		}
+		if fromAcc.Currency != debitCurrency {
+			return trading.ErrForexCurrencyMismatch
+		}
+		if err := f.db.WithContext(ctx).Raw(`
+			SELECT r.id, r.id_vlasnika, v.oznaka
+			FROM core_banking.racun r
+			JOIN core_banking.valuta v ON v.id = r.id_valute
+			WHERE r.id_vlasnika = ? AND v.oznaka = ? AND r.status = 'AKTIVAN'
+			ORDER BY r.id LIMIT 1
+		`, userID, creditCurrency).Scan(&toAcc).Error; err != nil || toAcc.ID == 0 {
+			return trading.ErrForexAccountNotFound
+		}
+	}
+
+	if fromAcc.ID == toAcc.ID {
+		return trading.ErrForexSameAccount
+	}
+
+	// ── Lock both accounts in id-ASC order (deadlock prevention) ──────────────
+	firstID, secondID := fromAcc.ID, toAcc.ID
+	if firstID > secondID {
+		firstID, secondID = secondID, firstID
+	}
+	type lockedRow struct {
+		ID                  int64  `gorm:"column:id"`
+		StanjeRacuna        string `gorm:"column:stanje_racuna"`
+		RezervovanaSredstva string `gorm:"column:rezervisana_sredstva"`
+	}
+	var locked []lockedRow
+	if err := f.db.WithContext(ctx).Raw(`
+		SELECT id, stanje_racuna, rezervisana_sredstva
+		FROM core_banking.racun
+		WHERE id IN (?, ?)
+		ORDER BY id
+		FOR UPDATE
+	`, firstID, secondID).Scan(&locked).Error; err != nil {
+		return fmt.Errorf("forex: zaključavanje računa: %w", err)
+	}
+
+	// ── Re-validate debit balance (TOCTOU-safe, after lock) ───────────────────
+	var lockedFrom *lockedRow
+	for i := range locked {
+		if locked[i].ID == fromAcc.ID {
+			lockedFrom = &locked[i]
+			break
+		}
+	}
+	if lockedFrom == nil {
+		return trading.ErrForexAccountNotFound
+	}
+	stanje, _ := decimal.NewFromString(lockedFrom.StanjeRacuna)
+	rezervisano, _ := decimal.NewFromString(lockedFrom.RezervovanaSredstva)
+	if stanje.Sub(rezervisano).LessThan(debitAmount) {
+		return trading.ErrInsufficientFunds
+	}
+
+	// ── Execute the swap ───────────────────────────────────────────────────────
+	if err := f.db.WithContext(ctx).Exec(`
+		UPDATE core_banking.racun
+		SET stanje_racuna = stanje_racuna - ?
+		WHERE id = ?
+	`, debitAmount.InexactFloat64(), fromAcc.ID).Error; err != nil {
+		return fmt.Errorf("forex debit računa %d: %w", fromAcc.ID, err)
+	}
+	if err := f.db.WithContext(ctx).Exec(`
+		UPDATE core_banking.racun
+		SET stanje_racuna = stanje_racuna + ?
+		WHERE id = ?
+	`, creditAmount.InexactFloat64(), toAcc.ID).Error; err != nil {
+		return fmt.Errorf("forex kredit računa %d: %w", toAcc.ID, err)
+	}
+
+	// ── Audit trail ───────────────────────────────────────────────────────────
+	now := time.Now().UTC()
+	opis := fmt.Sprintf("Forex swap %s/%s (%.6g %s → %.6g %s)",
+		baseCurrency, quoteCurrency,
+		debitAmount.InexactFloat64(), debitCurrency,
+		creditAmount.InexactFloat64(), creditCurrency,
+	)
+	entries := []transakcijaModel{
+		{
+			RacunID:          fromAcc.ID,
+			TipTransakcije:   "ISPLATA",
+			Iznos:            debitAmount.InexactFloat64(),
+			Opis:             opis,
+			VremeIzvrsavanja: now,
+			Status:           "IZVRSEN",
+		},
+		{
+			RacunID:          toAcc.ID,
+			TipTransakcije:   "UPLATA",
+			Iznos:            creditAmount.InexactFloat64(),
+			Opis:             opis,
+			VremeIzvrsavanja: now,
+			Status:           "IZVRSEN",
+		},
+	}
+	if err := f.db.WithContext(ctx).Create(&entries).Error; err != nil {
+		return fmt.Errorf("forex audit trail: %w", err)
+	}
 	return nil
+}
+
+// WithDB vraća novu instancu fundsManager koja koristi zadati *gorm.DB.
+// Koristi se u engine.go da sve fill operacije izvrsimo unutar iste DB transakcije.
+func (f *fundsManager) WithDB(db *gorm.DB) trading.FundsManager {
+	return &fundsManager{db: db, exchangeService: f.exchangeService, provizijaRate: f.provizijaRate}
 }

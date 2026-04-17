@@ -20,9 +20,9 @@ func NewListingMarketDataProvider(repo domain.ListingRepository) MarketDataProvi
 	return &listingMarketDataProvider{repo: repo}
 }
 
-// GetMarketSnapshot returns Ask, Bid, Volume, and — for FUTURE/OPTION listings
-// — the SettlementDate parsed from details_json.  If details_json is absent or
-// does not contain settlement_date, SettlementDate is nil (STOCK/FOREX listings).
+// GetMarketSnapshot returns Ask, Bid, Volume, and type-specific data parsed from
+// details_json.  For FUTURE/OPTION: SettlementDate.  For FOREX: BaseCurrency and
+// QuoteCurrency used by executeForexOrder for the currency swap.
 func (p *listingMarketDataProvider) GetMarketSnapshot(ctx context.Context, listingID int64) (MarketSnapshot, error) {
 	listing, err := p.repo.GetByID(ctx, listingID)
 	if err != nil {
@@ -30,14 +30,27 @@ func (p *listingMarketDataProvider) GetMarketSnapshot(ctx context.Context, listi
 	}
 
 	snap := MarketSnapshot{
-		Ask:    listing.Ask,
-		Bid:    listing.Bid,
-		Volume: listing.Volume,
+		Ask:         listing.Ask,
+		Bid:         listing.Bid,
+		Volume:      listing.Volume,
+		ExchangeID:  listing.ExchangeID,
+		ListingType: listing.ListingType,
 	}
 
-	// Parse settlement_date from details_json for FUTURE and OPTION listings.
-	// Accept both "YYYY-MM-DD" and RFC3339 formats (consistent with handler).
-	if listing.DetailsJSON != "" {
+	if listing.DetailsJSON == "" {
+		return snap, nil
+	}
+
+	switch listing.ListingType {
+	case domain.ListingTypeForex:
+		var details domain.ForexDetails
+		if json.Unmarshal([]byte(listing.DetailsJSON), &details) == nil {
+			snap.ForexBaseCurrency = details.BaseCurrency
+			snap.ForexQuoteCurrency = details.QuoteCurrency
+		}
+
+	case domain.ListingTypeFuture, domain.ListingTypeOption:
+		// Parse settlement_date. Accept both "YYYY-MM-DD" and RFC3339 formats.
 		var details struct {
 			SettlementDate string `json:"settlement_date"`
 		}

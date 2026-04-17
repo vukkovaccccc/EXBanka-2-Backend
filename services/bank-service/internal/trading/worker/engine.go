@@ -50,14 +50,17 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/rand"
 	"sync"
 	"time"
 
+	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/trading"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // isClientCtxKey je privatni ključ koji se koristi za prenošenje is_client
@@ -84,10 +87,29 @@ type MarketSnapshot struct {
 	Bid    float64
 	Volume int64
 
+	// ExchangeID je ID berze na kojoj se hartija trguje.
+	// Koristi se za proveru da li je berza otvorena pre svakog fill-a.
+	ExchangeID int64
+
 	// SettlementDate is nil for STOCK and FOREX listings.
 	// Non-nil for FUTURE and OPTION; used for settlement-date expiry checks.
 	// The concrete implementation parses this from listing.details_json.
 	SettlementDate *time.Time
+
+	// ListingType je tip hartije od vrednosti (STOCK, FOREX, FUTURE, OPTION).
+	// Koristi se u engine-u za odlučivanje o putanji izvršavanja (standardni fill loop vs. forex swap).
+	ListingType domain.ListingType
+
+	// ForexBaseCurrency i ForexQuoteCurrency su popunjeni samo za FOREX listinge.
+	// Npr. za EUR/USD: BaseCurrency="EUR", QuoteCurrency="USD".
+	ForexBaseCurrency  string
+	ForexQuoteCurrency string
+}
+
+// ExchangeChecker proverava da li je berza otvorena u trenutku izvršenja.
+// Implementira ga domain.BerzaService koji je već inicijalizovan u main.go.
+type ExchangeChecker interface {
+	IsExchangeOpen(ctx context.Context, exchangeID int64) (domain.MarketStatus, error)
 }
 
 // MarketDataProvider is the read-only interface the execution engine uses to
@@ -114,10 +136,6 @@ const (
 	// condition while waiting for a STOP or STOP_LIMIT order to activate.
 	stopPollInterval = 5 * time.Second
 
-	// afterHoursPenaltySeconds is added to every simulated wait when the order's
-	// after_hours flag is true.
-	afterHoursPenaltySeconds = 1800.0 // 30 minutes
-
 	// minWaitSeconds prevents a busy-loop on extremely liquid assets where the
 	// timing formula would otherwise return a sub-second delay.
 	minWaitSeconds = 1.0
@@ -136,9 +154,11 @@ const (
 // Engine is the asynchronous order execution engine.
 // It is safe to call Start concurrently (though normally only called once).
 type Engine struct {
-	orders trading.OrderRepository
-	market MarketDataProvider
-	funds  trading.FundsManager
+	orders   trading.OrderRepository
+	market   MarketDataProvider
+	funds    trading.FundsManager
+	exchange ExchangeChecker
+	db       *gorm.DB // koristi se za atomično omotavanje fill operacija u transakciju
 
 	// active tracks orderIDs that are currently being processed by a goroutine.
 	// Using sync.Map because reads dominate and keys are added/deleted by
@@ -146,17 +166,30 @@ type Engine struct {
 	active sync.Map // map[int64]struct{}
 
 	pollInterval time.Duration
+
+	// tickBus, ako je postavljen, isporučuje cenovne tikove od ListingRefresherWorker-a
+	// direktno do waitForLimitActivation goroutina — eliminišući potrebu za polling-om
+	// unutar svake goroutine i omogućavajući event-driven LIMIT okidanje.
+	// Može biti nil; u tom slučaju waitForLimitActivation pada nazad na originalni polling.
+	tickBus *PriceTickBus
 }
 
-// NewEngine constructs an Engine with its three dependencies.
+// NewEngine constructs an Engine with its dependencies.
 //
+// db je GORM konekcija koja se koristi za atomično omotavanje fill operacija.
 // pollInterval controls how often the main loop scans for APPROVED orders.
 // Pass 0 to use the package-level defaultPollInterval.
+// exchange se koristi za proveru da li je berza otvorena pre svakog fill-a.
+// tickBus, ako nije nil, omogućava event-driven LIMIT aktivaciju umesto polling-a.
+// Prosleđuje se i ListingRefresherWorker-u (kao worker.PriceTickPublisher) u main.go.
 func NewEngine(
 	orders trading.OrderRepository,
 	market MarketDataProvider,
 	funds trading.FundsManager,
+	exchange ExchangeChecker,
+	db *gorm.DB,
 	pollInterval time.Duration,
+	tickBus *PriceTickBus,
 ) *Engine {
 	if pollInterval <= 0 {
 		pollInterval = defaultPollInterval
@@ -165,7 +198,10 @@ func NewEngine(
 		orders:       orders,
 		market:       market,
 		funds:        funds,
+		exchange:     exchange,
+		db:           db,
 		pollInterval: pollInterval,
+		tickBus:      tickBus,
 	}
 }
 
@@ -398,13 +434,24 @@ func (e *Engine) waitForStopActivation(ctx context.Context, order *trading.Order
 	}
 }
 
-// ─── Limit activation (price watcher) ─────────────────────────────────────────
+// ─── Limit activation (event-driven + fallback poll) ──────────────────────────
 
 // waitForLimitActivation blocks until a LIMIT order can execute:
 //
-//	BUY  LIMIT: Ask <= PricePerUnit (buy at or below the limit)
+//	BUY  LIMIT: Ask <= PricePerUnit
 //	SELL LIMIT: Bid >= PricePerUnit
-
+//
+// Kada je tickBus postavljen, goroutina se pretplaćuje na PriceTick events od
+// ListingRefresherWorker-a i odmah proverava uslov čim cena stigne.  Ovo
+// eliminiše kašnjenje koje je postojalo u originalnom 5s polling pristupu.
+//
+// Fallback poll ticker (stopPollInterval) ostaje aktivan kao safety net:
+//   - kada je tickBus nil (backward-compatible)
+//   - kada refresher pauzira ili preskače ažuriranje zbog nepostojanja live podataka
+//
+// Returns (true, nil)  — uslov je ispunjen, nalog se može izvršiti.
+// Returns (false, nil) — nalog je otkazan ili je ctx završen.
+// Returns (false, err) — neočekivana DB ili market-data greška.
 func (e *Engine) waitForLimitActivation(ctx context.Context, order *trading.Order) (bool, error) {
 	if order.PricePerUnit == nil {
 		log.Printf("[trading/engine] order %d: PricePerUnit missing on LIMIT — aborting", order.ID)
@@ -412,14 +459,55 @@ func (e *Engine) waitForLimitActivation(ctx context.Context, order *trading.Orde
 	}
 	limit := *order.PricePerUnit
 
-	ticker := time.NewTicker(stopPollInterval)
-	defer ticker.Stop()
+	// Pretplata na cenovne tikove za ovaj listing.
+	// Nil tickCh u select case-u blokira zauvek → bezbedno kada tickBus nije postavljen.
+	var tickCh <-chan PriceTick
+	if e.tickBus != nil {
+		ch := e.tickBus.Subscribe(order.ListingID)
+		defer e.tickBus.Unsubscribe(order.ListingID, ch)
+		tickCh = ch
+		log.Printf("[trading/engine] order %d: subscribed to price ticks for listing %d (LIMIT=%s)",
+			order.ID, order.ListingID, limit.String())
+	}
+
+	// Fallback poll — ostaje aktivan kao safety net.
+	fallback := time.NewTicker(stopPollInterval)
+	defer fallback.Stop()
+
+	// limitMet vraća true kada je tržišna cena dostigla ili prošla limit.
+	limitMet := func(ask, bid float64) bool {
+		switch order.Direction {
+		case trading.OrderDirectionBuy:
+			return decimal.NewFromFloat(ask).LessThanOrEqual(limit)
+		case trading.OrderDirectionSell:
+			return decimal.NewFromFloat(bid).GreaterThanOrEqual(limit)
+		}
+		return false
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return false, nil
-		case <-ticker.C:
+
+		case tick := <-tickCh:
+			// Najpre proveri da nalog nije otkazan spolja.
+			current, err := e.orders.GetByID(ctx, order.ID)
+			if err != nil {
+				return false, err
+			}
+			if current.Status != trading.OrderStatusApproved || current.IsDone {
+				return false, nil
+			}
+			if limitMet(tick.Ask, tick.Bid) {
+				log.Printf("[trading/engine] order %d: LIMIT triggered by price tick (Ask=%.6f Bid=%.6f Limit=%s)",
+					order.ID, tick.Ask, tick.Bid, limit.String())
+				return true, nil
+			}
+			log.Printf("[trading/engine] order %d: tick received, limit not yet met (Ask=%.6f Bid=%.6f Limit=%s)",
+				order.ID, tick.Ask, tick.Bid, limit.String())
+
+		case <-fallback.C:
 			current, err := e.orders.GetByID(ctx, order.ID)
 			if err != nil {
 				return false, err
@@ -432,19 +520,12 @@ func (e *Engine) waitForLimitActivation(ctx context.Context, order *trading.Orde
 				log.Printf("[trading/engine] order %d: market snapshot error during limit poll: %v", order.ID, err)
 				continue
 			}
-			ask := decimal.NewFromFloat(snapshot.Ask)
-			bid := decimal.NewFromFloat(snapshot.Bid)
-			switch order.Direction {
-			case trading.OrderDirectionBuy:
-				if ask.LessThanOrEqual(limit) {
-					return true, nil
-				}
-			case trading.OrderDirectionSell:
-				if bid.GreaterThanOrEqual(limit) {
-					return true, nil
-				}
+			if limitMet(snapshot.Ask, snapshot.Bid) {
+				log.Printf("[trading/engine] order %d: LIMIT triggered by fallback poll (Ask=%.6f Bid=%.6f Limit=%s)",
+					order.ID, snapshot.Ask, snapshot.Bid, limit.String())
+				return true, nil
 			}
-			log.Printf("[trading/engine] order %d: limit not met yet (Ask=%.6f Bid=%.6f Limit=%s)",
+			log.Printf("[trading/engine] order %d: limit not met (Ask=%.6f Bid=%.6f Limit=%s)",
 				order.ID, snapshot.Ask, snapshot.Bid, limit.String())
 		}
 	}
@@ -463,14 +544,69 @@ func commissionForOrderType(ot trading.OrderType, fullNotional decimal.Decimal) 
 	}
 }
 
+// ─── Exchange open guard ──────────────────────────────────────────────────────
+
+// exchangeCheckInterval je koliko čekamo između ponovnih provera statusa berze
+// kada je berza zatvorena i čekamo na otvaranje.
+const exchangeCheckInterval = 60 * time.Second
+
+// waitForExchangeOpen blokira dok berza za dati exchangeID nije otvorena (OPEN).
+// Ponavlja proveru svakih exchangeCheckInterval sekundi.
+// Vraća false (bez greške) ako je ctx otkazan dok čekamo.
+// Vraća grešku samo u slučaju neočekivanog DB/service problema.
+// Ako ExchangeChecker nije injektovan (nil) ili exchangeID <= 0, prolazi bez čekanja.
+func (e *Engine) waitForExchangeOpen(ctx context.Context, exchangeID int64) (bool, error) {
+	if e.exchange == nil || exchangeID <= 0 {
+		return true, nil
+	}
+
+	for {
+		status, err := e.exchange.IsExchangeOpen(ctx, exchangeID)
+		if err != nil {
+			// Prolazna greška — logujemo i čekamo, ne zaustavljamo nalog.
+			log.Printf("[trading/engine] waitForExchangeOpen (exchange=%d): greška pri proveri statusa: %v — ponavlja se", exchangeID, err)
+		} else if status == domain.MarketStatusOpen ||
+			status == domain.MarketStatusPreMarket ||
+			status == domain.MarketStatusAfterHours {
+			// Simulacija: nalozi se izvršavaju i u produženim satima (pre-market / after-hours).
+			// Blokira se samo za vikende, praznike i noć (CLOSED).
+			return true, nil
+		} else {
+			log.Printf("[trading/engine] waitForExchangeOpen (exchange=%d): berza %s (vikend/praznik) — čekanje na otvaranje", exchangeID, status)
+		}
+
+		select {
+		case <-ctx.Done():
+			return false, nil
+		case <-time.After(exchangeCheckInterval):
+		}
+	}
+}
+
 // ─── Execution loop ───────────────────────────────────────────────────────────
 
 // executeOrder runs the partial-fill simulation for one order until it is
 // fully filled, canceled externally, or the context is canceled.
 //
-// Sleep is applied *between* partial fills (not before the first fill).
-// After-hours adds a fixed 30 minutes per wait segment.
+// Pre svakog fill-a proverava se da li je berza otvorena (waitForExchangeOpen).
+// Ako berza nije otvorena, goroutina čeka dok se ne otvori ili dok se nalog ne otkaže.
+// After-hours flag više ne dodaje vremensku kaznu — relevantnost after_hours
+// ostaje samo kao informacija o tome kada je nalog kreiran.
+//
+// FOREX nalozi se izvršavaju odmah kao atomični currency swap (executeForexOrder)
+// bez simulacije delimičnih fillova — ova grana se aktivira na početku metode.
 func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effectiveType trading.OrderType) error {
+	// ── FOREX: atomic single-shot swap execution ─────────────────────────────
+	// Fetch snapshot once to determine listing type. FOREX orders bypass the
+	// partial-fill loop entirely and execute as a one-shot currency swap.
+	initialSnap, err := e.market.GetMarketSnapshot(ctx, order.ListingID)
+	if err != nil {
+		return err
+	}
+	if initialSnap.ListingType == domain.ListingTypeForex {
+		return e.executeForexOrder(ctx, order, initialSnap)
+	}
+
 	for {
 		current, err := e.orders.GetByID(ctx, order.ID)
 		if err != nil {
@@ -487,6 +623,28 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 			return err
 		}
 
+		// ── Provera da li je berza otvorena ──────────────────────────────────────
+		// Fill se ne sme izvršiti dok berza nije OPEN — čak i ako je nalog APPROVED.
+		// Goroutina blokira ovde dok se berza ne otvori ili dok se nalog ne otkaže.
+		open, err := e.waitForExchangeOpen(ctx, snapshot.ExchangeID)
+		if err != nil {
+			return err
+		}
+		if !open {
+			// ctx je otkazan — engine se gasi.
+			return nil
+		}
+
+		// Re-fetch posle potencijalnog dugog čekanja — nalog možda otkazan tokom čekanja.
+		current, err = e.orders.GetByID(ctx, order.ID)
+		if err != nil {
+			return err
+		}
+		if current.Status != trading.OrderStatusApproved || current.IsDone {
+			log.Printf("[trading/engine] order %d: otkazan tokom čekanja na otvaranje berze — izlaz", order.ID)
+			return nil
+		}
+
 		executedPrice, err := resolveExecutionPrice(current, effectiveType, snapshot)
 		if err != nil {
 			return err
@@ -499,56 +657,77 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 			chunkSize = calcChunkSize(current.RemainingPortions)
 		}
 
-		if _, err := e.orders.CreateTransaction(ctx, current.ID, chunkSize, executedPrice); err != nil {
-			return err
-		}
-
-		if current.RemainingPortions == current.Quantity {
-			notional := executedPrice.Mul(decimal.NewFromInt(int64(current.Quantity)))
-			commission := commissionForOrderType(current.OrderType, notional)
-			if commission.IsPositive() {
-				if err := e.funds.ChargeCommission(ctx, current.AccountID, commission); err != nil {
-					log.Printf("[trading/engine] order %d: charge commission error: %v", current.ID, err)
-				} else {
-					log.Printf("[trading/engine] order %d: commission charged: %s", current.ID, commission.String())
-				}
-			}
-		}
-
-		fillAmount := executedPrice.Mul(decimal.NewFromInt(int64(chunkSize)))
-		if current.Direction == trading.OrderDirectionBuy {
-			if err := e.funds.SettleBuyFill(ctx, current.AccountID, fillAmount); err != nil {
-				log.Printf("[trading/engine] order %d: settle buy fill: %v", current.ID, err)
-			}
-		} else {
-			if err := e.funds.CreditSellFill(ctx, current.AccountID, fillAmount); err != nil {
-				log.Printf("[trading/engine] order %d: credit sell fill: %v", current.ID, err)
-			}
-		}
-
+		// Sve četiri DB operacije jedne iteracije filla omotane su u jednu transakciju
+		// (BUG-4): CreateTransaction + ChargeCommission + SettleBuyFill/CreditSellFill
+		// + MarkDone/UpdateRemainingPortions. Ako server crasha između operacija,
+		// nijedna parcijalna promena neće ostati u bazi.
+		isFirstFill := current.RemainingPortions == current.Quantity
 		newRemaining := current.RemainingPortions - chunkSize
-		log.Printf("[trading/engine] order %d: filled %d contracts at %s (remaining: %d → %d)",
-			current.ID, chunkSize, executedPrice.String(), current.RemainingPortions, newRemaining)
+		fillAmount := executedPrice.Mul(decimal.NewFromInt(int64(chunkSize)))
 
-		if newRemaining == 0 {
-			if _, err := e.orders.MarkDone(ctx, current.ID); err != nil {
+		var commission decimal.Decimal
+		if isFirstFill {
+			notional := executedPrice.Mul(decimal.NewFromInt(int64(current.Quantity)))
+			commission = commissionForOrderType(current.OrderType, notional)
+		}
+
+		if err := e.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			txOrders := e.orders.WithDB(tx)
+			txFunds := e.funds.WithDB(tx)
+
+			if _, err := txOrders.CreateTransaction(ctx, current.ID, chunkSize, executedPrice); err != nil {
 				return err
 			}
-			log.Printf("[trading/engine] order %d: fully executed — DONE", current.ID)
-			return nil
+			if isFirstFill && commission.IsPositive() {
+				if err := txFunds.ChargeCommission(ctx, current.AccountID, commission); err != nil {
+					return err
+				}
+			}
+			if current.Direction == trading.OrderDirectionBuy {
+				if err := txFunds.SettleBuyFill(ctx, current.AccountID, fillAmount); err != nil {
+					return err
+				}
+			} else {
+				if err := txFunds.CreditSellFill(ctx, current.AccountID, fillAmount); err != nil {
+					return err
+				}
+			}
+			if newRemaining == 0 {
+				_, err := txOrders.MarkDone(ctx, current.ID)
+				return err
+			}
+			_, err := txOrders.UpdateRemainingPortions(ctx, current.ID, newRemaining, false)
+			return err
+		}); err != nil {
+			if current.Direction == trading.OrderDirectionBuy && errors.Is(err, trading.ErrInsufficientFunds) {
+				log.Printf("[trading/engine] order %d: nedovoljno sredstava na računu %d — nalog se odbija", current.ID, current.AccountID)
+				if _, decErr := e.orders.UpdateStatus(ctx, current.ID, trading.OrderStatusDeclined, nil); decErr != nil {
+					log.Printf("[trading/engine] order %d: greška pri odbijanju: %v", current.ID, decErr)
+				}
+				releaseAmt := executedPrice.Mul(decimal.NewFromInt(int64(current.RemainingPortions)))
+				if relErr := e.funds.ReleaseFunds(ctx, current.AccountID, releaseAmt); relErr != nil {
+					log.Printf("[trading/engine] order %d: greška pri oslobađanju rezervacije: %v", current.ID, relErr)
+				}
+				return nil
+			}
+			return err
 		}
 
-		if _, err := e.orders.UpdateRemainingPortions(ctx, current.ID, newRemaining, false); err != nil {
-			return err
+		log.Printf("[trading/engine] order %d: filled %d contracts at %s (remaining: %d → %d)",
+			current.ID, chunkSize, executedPrice.String(), current.RemainingPortions, newRemaining)
+		if isFirstFill && commission.IsPositive() {
+			log.Printf("[trading/engine] order %d: commission charged: %s", current.ID, commission.String())
+		}
+
+		if newRemaining == 0 {
+			log.Printf("[trading/engine] order %d: fully executed — DONE", current.ID)
+			return nil
 		}
 
 		order = current
 		order.RemainingPortions = newRemaining
 
 		waitSecs := calcWaitSeconds(snapshot.Volume, newRemaining)
-		if current.AfterHours {
-			waitSecs += afterHoursPenaltySeconds
-		}
 		log.Printf("[trading/engine] order %d: sleeping %.1fs before next fill (remaining=%d)",
 			order.ID, waitSecs, newRemaining)
 
@@ -558,6 +737,135 @@ func (e *Engine) executeOrder(ctx context.Context, order *trading.Order, effecti
 		case <-time.After(time.Duration(waitSecs * float64(time.Second))):
 		}
 	}
+}
+
+// ─── Forex execution ──────────────────────────────────────────────────────────
+
+// executeForexOrder izvršava forex nalog kao jednokratni atomični currency swap.
+//
+// Logika izvršenja (u skladu sa specifikacijom):
+//   - BUY  BASE/QUOTE: skini (nominalBase × kurs) sa QUOTE računa, uplati nominalBase na BASE račun.
+//   - SELL BASE/QUOTE: skini nominalBase sa BASE računa, uplati (nominalBase × kurs) na QUOTE račun.
+//
+// gde je nominalBase = contractSize × quantity.
+//
+// Ako je kurs nedostupan, nalog ostaje u APPROVED stanju i engine će ga pokupiti
+// na sledećem tick-u (retry strategija bez eksplicitnog čekanja).
+//
+// Ako validacija računa ili sredstava ne prođe → nalog se odmah prebacuje u DECLINED.
+// Sve operacije (swap + CreateTransaction + MarkDone) su u jednoj DB transakciji.
+func (e *Engine) executeForexOrder(ctx context.Context, order *trading.Order, snap MarketSnapshot) error {
+	// Re-fetch order to detect any external cancellation since the goroutine started.
+	current, err := e.orders.GetByID(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	if current.Status != trading.OrderStatusApproved || current.IsDone {
+		log.Printf("[trading/engine] forex order %d: not active (%s is_done=%v) — exiting",
+			order.ID, current.Status, current.IsDone)
+		return nil
+	}
+
+	// Wait for exchange to be open before attempting execution.
+	open, err := e.waitForExchangeOpen(ctx, snap.ExchangeID)
+	if err != nil {
+		return err
+	}
+	if !open {
+		return nil // ctx canceled — engine shutting down
+	}
+
+	// Re-fetch order and snapshot after potential long wait for exchange open.
+	current, err = e.orders.GetByID(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	if current.Status != trading.OrderStatusApproved || current.IsDone {
+		log.Printf("[trading/engine] forex order %d: canceled while waiting for exchange — exiting", order.ID)
+		return nil
+	}
+	snap, err = e.market.GetMarketSnapshot(ctx, current.ListingID)
+	if err != nil {
+		// Rate unavailable — leave order in APPROVED; next tick will retry.
+		log.Printf("[trading/engine] forex order %d: snapshot unavailable — will retry on next tick: %v", order.ID, err)
+		return nil
+	}
+
+	// Determine execution rate: Ask for BUY, Bid for SELL.
+	// For LIMIT orders (PricePerUnit != nil), enforce the limit price as a
+	// floor/ceiling to protect against the TOCTOU window between activation
+	// and this snapshot fetch:
+	//   BUY  LIMIT: rate = min(Ask, limitPrice)  — never pay more than limit
+	//   SELL LIMIT: rate = max(Bid, limitPrice)  — never receive less than limit
+	var rate decimal.Decimal
+	if current.Direction == trading.OrderDirectionBuy {
+		rate = decimal.NewFromFloat(snap.Ask)
+		if current.PricePerUnit != nil && rate.GreaterThan(*current.PricePerUnit) {
+			rate = *current.PricePerUnit
+		}
+	} else {
+		rate = decimal.NewFromFloat(snap.Bid)
+		if current.PricePerUnit != nil && rate.LessThan(*current.PricePerUnit) {
+			rate = *current.PricePerUnit
+		}
+	}
+	if rate.IsZero() {
+		log.Printf("[trading/engine] forex order %d: rate is zero — will retry on next tick", order.ID)
+		return nil
+	}
+
+	// nominalBase = contractSize × quantity (units of BASE currency)
+	nominalBase := decimal.NewFromInt(int64(current.ContractSize)).
+		Mul(decimal.NewFromInt(int64(current.Quantity)))
+
+	// Execute atomically: swap + transaction record + mark done in one DB transaction.
+	var declined bool
+	if txErr := e.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		txOrders := e.orders.WithDB(tx)
+		txFunds := e.funds.WithDB(tx)
+
+		// Currency swap — validates accounts, locks rows, checks balance (TOCTOU-safe).
+		if swapErr := txFunds.ForexSwap(ctx,
+			current.UserID, current.AccountID,
+			snap.ForexBaseCurrency, snap.ForexQuoteCurrency,
+			nominalBase, rate, current.Direction,
+		); swapErr != nil {
+			if isForexDeclineError(swapErr) {
+				declined = true
+				log.Printf("[trading/engine] forex order %d: declining — %v", order.ID, swapErr)
+				_, decErr := txOrders.UpdateStatus(ctx, current.ID, trading.OrderStatusDeclined, nil)
+				return decErr // commit the DECLINED status; nil commits
+			}
+			return swapErr // unexpected DB error — roll back
+		}
+
+		// Record execution (single fill — full quantity, execution rate).
+		if _, txErr := txOrders.CreateTransaction(ctx, current.ID, current.Quantity, rate); txErr != nil {
+			return txErr
+		}
+		// Mark order as fully done.
+		_, markErr := txOrders.MarkDone(ctx, current.ID)
+		return markErr
+	}); txErr != nil {
+		return txErr
+	}
+
+	if declined {
+		log.Printf("[trading/engine] forex order %d: DECLINED", order.ID)
+	} else {
+		log.Printf("[trading/engine] forex order %d: forex swap executed at rate %s — DONE", order.ID, rate.String())
+	}
+	return nil
+}
+
+// isForexDeclineError returns true for business-rule violations in ForexSwap that
+// should cause the order to be declined rather than retried.
+func isForexDeclineError(err error) bool {
+	return errors.Is(err, trading.ErrForexAccountNotFound) ||
+		errors.Is(err, trading.ErrForexCurrencyMismatch) ||
+		errors.Is(err, trading.ErrForexSameAccount) ||
+		errors.Is(err, trading.ErrForexSameCurrency) ||
+		errors.Is(err, trading.ErrInsufficientFunds)
 }
 
 // ─── Pure helper functions ────────────────────────────────────────────────────

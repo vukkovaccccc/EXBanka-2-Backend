@@ -221,6 +221,59 @@ func (r *actuaryRepository) IncrementUsedLimitIfWithin(ctx context.Context, empl
 	return a, nil
 }
 
+// ─── IncrementUsedLimitAlways ─────────────────────────────────────────────────
+
+// IncrementUsedLimitAlways atomski povećava used_limit za agenta za dati iznos
+// bez obzira na to da li novi zbir premašuje dnevni limit.
+//
+// SQL UPDATE uvek prolazi (nema WHERE guard na limitu), pa se potrošnja evidentira
+// čak i kad nalog ide u PENDING. Pozivalac dobija exceeded zastavicu i sam odlučuje
+// o statusu naloga.
+func (r *actuaryRepository) IncrementUsedLimitAlways(ctx context.Context, employeeID int64, amount decimal.Decimal) (*domain.Actuary, bool, error) {
+	amountStr := amount.StringFixed(2)
+
+	row := r.db.QueryRowContext(ctx, `
+		UPDATE core_banking.actuary_info
+		SET    used_limit = used_limit + $1::numeric,
+		       updated_at = NOW()
+		WHERE  employee_id = $2
+		  AND  actuary_type = 'AGENT'
+		RETURNING id, employee_id, actuary_type, "limit", used_limit, need_approval, created_at, updated_at
+	`, amountStr, employeeID)
+
+	var (
+		id           int64
+		empID        int64
+		actuaryType  string
+		lim          string
+		usedLim      string
+		needApproval bool
+		createdAt    interface{}
+		updatedAt    interface{}
+	)
+	err := row.Scan(&id, &empID, &actuaryType, &lim, &usedLim, &needApproval, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, domain.ErrActuaryNotFound
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("increment used_limit (always) for employee %d: %w", employeeID, err)
+	}
+
+	limDec, _ := decimal.NewFromString(lim)
+	usedDec, _ := decimal.NewFromString(usedLim)
+	exceeded := usedDec.GreaterThan(limDec)
+
+	a := &domain.Actuary{
+		ID:           id,
+		EmployeeID:   empID,
+		ActuaryType:  domain.ActuaryType(actuaryType),
+		Limit:        limDec,
+		UsedLimit:    usedDec,
+		NeedApproval: needApproval,
+	}
+	return a, exceeded, nil
+}
+
 // InsertActuaryLimitAudit upisuje audit zapis u core_banking.actuary_limit_audit.
 func (r *actuaryRepository) InsertActuaryLimitAudit(
 	ctx context.Context,

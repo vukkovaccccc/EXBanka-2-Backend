@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // ─── Sentinel errors ──────────────────────────────────────────────────────────
@@ -62,8 +63,8 @@ var (
 	ErrSettlementDatePassed = errors.New("datum dospeća hartije je prošao; nalog je automatski odbijen")
 
 	// ErrListingTypeNotAllowed is returned when a CLIENT tries to create an
-	// order for a listing type that is not available to clients (e.g. FOREX, OPTION).
-	ErrListingTypeNotAllowed = errors.New("klijenti mogu trgovati samo akcijama i futures-ima")
+	// order for a listing type that is not available to clients (e.g. FOREX).
+	ErrListingTypeNotAllowed = errors.New("klijenti ne mogu da trguju FOREX instrumentima")
 
 	// ErrInsufficientHoldings is returned when a SELL order is submitted but
 	// the user does not own enough of the asset (net holdings < requested quantity).
@@ -73,6 +74,14 @@ var (
 	// the account's free balance (stanje_racuna − rezervisana_sredstva) is
 	// less than the order's notional value.
 	ErrInsufficientFunds = errors.New("nedovoljno sredstava na računu")
+
+	// ── Forex-specific decline errors ─────────────────────────────────────────
+	// These are returned by ForexSwap and cause the order to be Declined.
+
+	ErrForexAccountNotFound  = errors.New("forex: račun za valutu nije pronađen ili ne pripada korisniku")
+	ErrForexCurrencyMismatch = errors.New("forex: valuta računa ne odgovara paru BASE/QUOTE")
+	ErrForexSameCurrency     = errors.New("forex: BASE i QUOTE valuta su iste")
+	ErrForexSameAccount      = errors.New("forex: BASE i QUOTE račun su isti")
 )
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -100,6 +109,10 @@ type OrderStatus string
 
 // ApprovedByNoApproval is persisted when an order is approved without supervisor review (clients, auto-approved agents).
 const ApprovedByNoApproval = "No need for approval"
+
+// DeclinedBySettlementExpiry is persisted as approved_by when an order is created but immediately declined
+// because the instrument's settlement_date has already passed.
+const DeclinedBySettlementExpiry = "System (settlement date passed)"
 
 const (
 	OrderStatusPending  OrderStatus = "PENDING"
@@ -261,6 +274,20 @@ type CreateOrderRequest struct {
 	// Stored in the DB so the async execution engine can apply the correct
 	// exchange rate (prodajni kurs) when converting USD fills to account currency.
 	IsClient bool
+
+	// IsForex is true when the listing is of type FOREX.
+	// Set by the handler; used by the service to skip checks that don't apply to FOREX
+	// (sell ownership validation, pre-creation funds check, BUY fund reservation).
+	// Execution-time validation in ForexSwap covers all of these instead.
+	IsForex bool
+
+	// SettlementExpired is true when the listing's settlement_date has already passed.
+	// When set, the service skips all validation and creates the order immediately as DECLINED.
+	SettlementExpired bool
+
+	// ApprovedByOverride, when non-nil, overrides the default approved_by value stored in the DB.
+	// Used for system-declined orders (e.g., settlement date passed) to record the reason.
+	ApprovedByOverride *string
 }
 
 // ─── External service interfaces ─────────────────────────────────────────────
@@ -270,7 +297,8 @@ type CreateOrderRequest struct {
 //
 // Per spec, a margin order is accepted when the user satisfies AT LEAST ONE of:
 //  1. Client: has an approved (active) credit whose amount > InitialMarginCost.
-//  2. Client or Actuary: the selected account's free balance > InitialMarginCost.
+//  2. Client: selected account's free balance >= InitialMarginCost.
+//     Actuary: bank trezor account for the listing currency has free balance >= InitialMarginCost.
 type MarginChecker interface {
 	// HasSufficientMargin returns (true, nil) when the account's free balance
 	// (stanje_racuna − rezervisana_sredstva) is greater than or equal to
@@ -281,10 +309,17 @@ type MarginChecker interface {
 
 	// HasApprovedCreditForMargin returns (true, nil) when the user has at least
 	// one approved (ODOBREN) credit whose iznos_kredita exceeds required.
-	// This is the credit-based margin condition from the spec (condition 1).
+	// This is the credit-based margin condition from the spec (condition 1, clients only).
 	// Returns (false, nil) when no qualifying credit exists.
 	// Returns (false, err) on any DB-level failure.
 	HasApprovedCreditForMargin(ctx context.Context, userID int64, required decimal.Decimal) (bool, error)
+
+	// HasSufficientMarginTrezor returns (true, nil) when the bank trezor account
+	// for the given currency (id_vlasnika=2) has free balance >= required.
+	// Used for actuary margin checks — actuaries don't pick a personal account;
+	// the backend auto-resolves the bank's account for that currency.
+	// Returns (false, err) when no active trezor account exists for that currency.
+	HasSufficientMarginTrezor(ctx context.Context, currency string, required decimal.Decimal) (bool, error)
 }
 
 // FundsManager handles account balance mutations that occur during the order
@@ -328,12 +363,41 @@ type FundsManager interface {
 	// Returns (false, err) on any DB-level or conversion failure.
 	HasSufficientFunds(ctx context.Context, accountID int64, usdAmount decimal.Decimal) (bool, error)
 
+	// HasSufficientFreeBalance returns (true, nil) when the account's free balance
+	// (stanje_racuna − rezervisana_sredstva) is >= required in the account's native
+	// currency. No USD conversion is applied.
+	// Used for FOREX SELL pre-validation where the amount is already in BASE currency.
+	HasSufficientFreeBalance(ctx context.Context, accountID int64, required decimal.Decimal) (bool, error)
+
 	// ConvertUSDToRSD converts a USD amount to RSD using the mid-rate exchange
 	// rate (no fee, same as the menjačnica without provizija).
 	// Used by the trading service to convert order notionals to RSD before
 	// comparing against an agent's daily limit (which is stored in RSD).
 	// Returns the original amount if the USD rate cannot be fetched.
 	ConvertUSDToRSD(ctx context.Context, usdAmount decimal.Decimal) (decimal.Decimal, error)
+
+	// ForexSwap atomically executes a currency swap for a forex order.
+	//
+	// direction=BUY:  debit (nominalBase × rate) from fromAccount (QUOTE currency),
+	//                 credit nominalBase to user's BASE account.
+	// direction=SELL: debit nominalBase from fromAccount (BASE currency),
+	//                 credit (nominalBase × rate) to user's QUOTE account.
+	//
+	// fromAccountID is the AccountID stored on the order (the "debit" account).
+	// The counterpart account is found automatically among the user's active accounts.
+	// Both accounts are locked in id-ASC order before balances are validated (TOCTOU fix).
+	//
+	// Decline-class errors (order should be set to DECLINED):
+	//   ErrForexAccountNotFound, ErrForexCurrencyMismatch,
+	//   ErrForexSameAccount, ErrForexSameCurrency, ErrInsufficientFunds.
+	ForexSwap(ctx context.Context, userID int64, fromAccountID int64,
+		baseCurrency, quoteCurrency string,
+		nominalBase, rate decimal.Decimal,
+		direction OrderDirection) error
+
+	// WithDB vraća novu instancu koja koristi dati *gorm.DB (može biti transakcija).
+	// Neophodan za atomično izvršavanje fill operacija u engine.go.
+	WithDB(db *gorm.DB) FundsManager
 }
 
 // ─── Repository interface ─────────────────────────────────────────────────────
@@ -438,6 +502,10 @@ type OrderRepository interface {
 	// Used by the SELL ownership validation in the service layer to reject orders
 	// when the user does not hold (or has already committed to sell) enough shares.
 	GetNetHoldings(ctx context.Context, userID, listingID int64) (int64, error)
+
+	// WithDB vraća novu instancu koja koristi dati *gorm.DB (može biti transakcija).
+	// Neophodan za atomično izvršavanje fill operacija u engine.go.
+	WithDB(db *gorm.DB) OrderRepository
 }
 
 // ─── Service interface ────────────────────────────────────────────────────────
@@ -497,14 +565,19 @@ type TradingService interface {
 
 	// CancelOrder manually stops an order that is PENDING or APPROVED,
 	// regardless of whether partial fills have already been recorded.
-	// It atomically sets status=CANCELED, remaining_portions=0, is_done=true.
+	// It atomically sets status=CANCELED, is_done=true, and preserves
+	// remaining_portions so callers can compute executedQty = Quantity − RemainingPortions.
 	//
 	// Permission: requestedBy must be either the order's original owner
-	// (order.UserID == requestedBy) or a Supervisor; otherwise ErrPermissionDenied
-	// is returned.
+	// (order.UserID == requestedBy) or a Supervisor.  callerIsSupervisor is
+	// the JWT-derived flag (same as CreateOrderRequest.IsSupervisor) and is
+	// checked first; the actuary_info DB lookup is skipped when it is true.
+	// This matches the pattern established by CreateOrder and prevents stale
+	// actuary_info records from blocking legitimate supervisors.
 	//
 	// Returns ErrOrderNotFound if the order does not exist.
+	// Returns ErrPermissionDenied if the caller is not the owner and not a supervisor.
 	// Returns ErrInvalidOrderState if the order is already DONE, DECLINED,
 	// or CANCELED (i.e., no longer active).
-	CancelOrder(ctx context.Context, orderID int64, requestedBy int64) (*Order, error)
+	CancelOrder(ctx context.Context, orderID int64, requestedBy int64, callerIsSupervisor bool) (*Order, error)
 }
