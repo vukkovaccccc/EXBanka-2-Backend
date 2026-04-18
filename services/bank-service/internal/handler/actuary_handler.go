@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	pb "banka-backend/proto/actuary"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"

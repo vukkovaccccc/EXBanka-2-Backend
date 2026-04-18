@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 )
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -150,4 +150,3 @@ func (h *KlientKarticeHandler) requireClientAuth(w http.ResponseWriter, r *http.
 	}
 	return korisnikID, true
 }
-

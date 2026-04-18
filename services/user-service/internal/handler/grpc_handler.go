@@ -17,10 +17,10 @@ import (
 	"time"
 
 	pb "banka-backend/proto/user"
-	auth "banka-backend/shared/auth"
 	db "banka-backend/services/user-service/internal/database/sqlc"
 	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/utils"
+	auth "banka-backend/shared/auth"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc/codes"
@@ -35,15 +35,15 @@ import (
 // are added to the proto.
 type UserHandler struct {
 	pb.UnimplementedUserServiceServer
-	querier          db.Querier           // injected sqlc query layer (non-transactional reads)
-	sqlDB            *sql.DB              // raw connection pool — used only to open transactions
-	accessSecret     string               // HMAC secret for signing access tokens
-	refreshSecret    string               // HMAC secret for signing refresh tokens
-	activationSecret string               // HMAC secret for signing activation/reset tokens
-	publisher             utils.EmailPublisher        // abstracts RabbitMQ publishing for testability
-	userCreatedPublisher  utils.UserCreatedPublisher  // publishes employee-created events to bank-service
-	clientSvc             domain.ClientService        // use-case layer for client operations
-	bankClient            BankActuaryClient           // nil → bank-service sync disabled
+	querier              db.Querier                 // injected sqlc query layer (non-transactional reads)
+	sqlDB                *sql.DB                    // raw connection pool — used only to open transactions
+	accessSecret         string                     // HMAC secret for signing access tokens
+	refreshSecret        string                     // HMAC secret for signing refresh tokens
+	activationSecret     string                     // HMAC secret for signing activation/reset tokens
+	publisher            utils.EmailPublisher       // abstracts RabbitMQ publishing for testability
+	userCreatedPublisher utils.UserCreatedPublisher // publishes employee-created events to bank-service
+	clientSvc            domain.ClientService       // use-case layer for client operations
+	bankClient           BankActuaryClient          // nil → bank-service sync disabled
 }
 
 // NewUserHandler constructs a UserHandler.
@@ -318,7 +318,7 @@ func (h *UserHandler) UpdateEmployee(ctx context.Context, req *pb.UpdateEmployee
 
 	// ── 2b. AGENT ↔ SUPERVISOR mutual exclusivity (non-admin updates only) ────
 	hasSupervisorInReq := slices.Contains(req.Permissions, PermSupervisor)
-	hasAgentInReq      := slices.Contains(req.Permissions, PermAgent)
+	hasAgentInReq := slices.Contains(req.Permissions, PermAgent)
 	if !makingAdmin && hasSupervisorInReq && hasAgentInReq {
 		return nil, status.Errorf(codes.InvalidArgument, "zaposleni ne može imati istovremeno AGENT i SUPERVISOR permisiju")
 	}
@@ -341,7 +341,7 @@ func (h *UserHandler) UpdateEmployee(ctx context.Context, req *pb.UpdateEmployee
 		return nil, status.Errorf(codes.Internal, "failed to read existing permissions")
 	}
 	oldHasSupervisor := slices.Contains(oldPerms, PermSupervisor)
-	oldHasAgent      := slices.Contains(oldPerms, PermAgent)
+	oldHasAgent := slices.Contains(oldPerms, PermAgent)
 
 	// New effective actuary type after this update.
 	newActuaryType := ""
@@ -1226,9 +1226,9 @@ func (h *UserHandler) GetClientByID(ctx context.Context, req *pb.GetClientByIDRe
 //
 // Mapped to: GET /client
 func (h *UserHandler) ListClients(ctx context.Context, req *pb.ListClientsRequest) (*pb.ListClientsResponse, error) {
-	// ── 1. Authorization — EMPLOYEE or ADMIN ──────────────────────────────────
+	// ── 1. Authorization — EMPLOYEE only ──────────────────────────────────────
 	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok || (claims.UserType != "EMPLOYEE" && claims.UserType != "ADMIN") {
+	if !ok || claims.UserType != "EMPLOYEE" {
 		return nil, status.Errorf(codes.PermissionDenied, "only employees can list clients")
 	}
 

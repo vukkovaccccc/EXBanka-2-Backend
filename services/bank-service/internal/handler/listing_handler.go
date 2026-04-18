@@ -7,9 +7,9 @@ import (
 	"time"
 
 	pb "banka-backend/proto/banka"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/worker"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

@@ -144,7 +144,6 @@ func TestSendEmail_ActivationLinkContainsFrontendURL(t *testing.T) {
 	assert.Contains(t, capturedBody, "my-token")
 }
 
-
 // ─── ErrUnknownEventType ──────────────────────────────────────────────────────
 
 func TestErrUnknownEventType_Error(t *testing.T) {

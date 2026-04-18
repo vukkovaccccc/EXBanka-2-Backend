@@ -39,31 +39,31 @@ type PaymentRecipient struct {
 
 // PaymentIntent je domenski objekat za nalog plaćanja/prenosa.
 type PaymentIntent struct {
-	ID                  int64
-	IdempotencyKey      string
-	BrojNaloga          string
-	TipTransakcije      string // "PLACANJE" | "PRENOS"
-	RacunPlatioceID     int64
-	BrojRacunaPlatioca  string
-	ValutaOznaka        string
-	RacunPrimaocaID     *int64
-	BrojRacunaPrimaoca  string
-	NazivPrimaoca       string
-	Iznos               float64
-	KrajnjiIznos        *float64
-	Provizija           float64
-	Kurs                float64
-	ValutaPrimaoca      string
-	SifraPlacanja       string
-	PozivNaBroj         string
-	SvrhaPlacanja       string
-	Status              string // "U_OBRADI" | "REALIZOVANO" | "ODBIJENO"
-	PendingActionID     *int64
-	InitiatedByUserID   int64
-	CreatedAt           time.Time
-	VerifiedAt          *time.Time
-	ExecutedAt          *time.Time
-	FailedReason        string
+	ID                 int64
+	IdempotencyKey     string
+	BrojNaloga         string
+	TipTransakcije     string // "PLACANJE" | "PRENOS"
+	RacunPlatioceID    int64
+	BrojRacunaPlatioca string
+	ValutaOznaka       string
+	RacunPrimaocaID    *int64
+	BrojRacunaPrimaoca string
+	NazivPrimaoca      string
+	Iznos              float64
+	KrajnjiIznos       *float64
+	Provizija          float64
+	Kurs               float64
+	ValutaPrimaoca     string
+	SifraPlacanja      string
+	PozivNaBroj        string
+	SvrhaPlacanja      string
+	Status             string // "U_OBRADI" | "REALIZOVANO" | "ODBIJENO"
+	PendingActionID    *int64
+	InitiatedByUserID  int64
+	CreatedAt          time.Time
+	VerifiedAt         *time.Time
+	ExecutedAt         *time.Time
+	FailedReason       string
 }
 
 // ─── Filter za istoriju plaćanja ──────────────────────────────────────────────
@@ -105,9 +105,9 @@ type CreateTransferIntentInput struct {
 
 // VerifyPaymentInput parametri za verifikaciju plaćanja i izvršenje.
 type VerifyPaymentInput struct {
-	IntentID  int64
-	Code      string
-	UserID    int64
+	IntentID int64
+	Code     string
+	UserID   int64
 }
 
 // ─── Repository interfejsi ────────────────────────────────────────────────────

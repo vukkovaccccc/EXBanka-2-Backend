@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/service"
+	auth "banka-backend/shared/auth"
 
 	"gorm.io/gorm"
 )

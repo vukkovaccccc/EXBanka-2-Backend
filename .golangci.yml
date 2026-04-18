@@ -12,12 +12,34 @@ linters:
     - staticcheck
     - ineffassign
     - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (net.Conn).Close
+        - (*net/http.Response).Body.Close
+        - (*github.com/rabbitmq/amqp091-go.Connection).Close
+        - (*github.com/rabbitmq/amqp091-go.Channel).Close
+        - (*github.com/rabbitmq/amqp091-go.Delivery).Ack
+        - (*github.com/rabbitmq/amqp091-go.Delivery).Nack
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*encoding/json.Encoder).Encode
+        - (net/http.ResponseWriter).Write
   exclusions:
     generated: lax
     paths:
       - proto
       - docs/swagger
       - services/.*/mocks
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - staticcheck
 
 formatters:
   enable:

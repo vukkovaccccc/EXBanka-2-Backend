@@ -34,10 +34,10 @@ type Exchange struct {
 	MICCode      string
 	Polity       string
 	CurrencyID   int64
-	CurrencyName string    // naziv valute, npr. "Američki dolar" — popunjava JOIN u repozitorijumu
-	Timezone     string    // IANA timezone, e.g. "America/New_York"
-	OpenTime     time.Time // radno vreme otvaranja (TIME iz baze, samo sat:minut)
-	CloseTime    time.Time // radno vreme zatvaranja (TIME iz baze, samo sat:minut)
+	CurrencyName string       // naziv valute, npr. "Američki dolar" — popunjava JOIN u repozitorijumu
+	Timezone     string       // IANA timezone, e.g. "America/New_York"
+	OpenTime     time.Time    // radno vreme otvaranja (TIME iz baze, samo sat:minut)
+	CloseTime    time.Time    // radno vreme zatvaranja (TIME iz baze, samo sat:minut)
 	MarketStatus MarketStatus // popunjava se u servisnom sloju; nije čuvano u bazi
 }
 

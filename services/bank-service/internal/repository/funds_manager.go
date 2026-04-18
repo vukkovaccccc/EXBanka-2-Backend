@@ -358,7 +358,7 @@ func (f *fundsManager) CreditSellFill(ctx context.Context, accountID int64, amou
 // posjeduje db i exchangeService — nema potrebe za posebnim tipom.
 func (f *fundsManager) HasSufficientFunds(ctx context.Context, accountID int64, usdAmount decimal.Decimal) (bool, error) {
 	var row struct {
-		StanjeRacuna       string `gorm:"column:stanje_racuna"`
+		StanjeRacuna        string `gorm:"column:stanje_racuna"`
 		RezervovanaSredstva string `gorm:"column:rezervisana_sredstva"`
 	}
 	err := f.db.WithContext(ctx).

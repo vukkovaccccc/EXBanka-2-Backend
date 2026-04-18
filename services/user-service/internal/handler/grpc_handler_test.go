@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pb "banka-backend/proto/user"
-	auth "banka-backend/shared/auth"
 	sqlc "banka-backend/services/user-service/internal/database/sqlc"
 	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/handler"
 	"banka-backend/services/user-service/internal/testutil"
 	utils "banka-backend/services/user-service/internal/utils"
 	"banka-backend/services/user-service/mocks"
+	auth "banka-backend/shared/auth"
 
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
@@ -1053,7 +1053,6 @@ func TestCreateClient(t *testing.T) {
 		})
 	}
 }
-
 
 // ─── GetClientByID ────────────────────────────────────────────────────────────
 

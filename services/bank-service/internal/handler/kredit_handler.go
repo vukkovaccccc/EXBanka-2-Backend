@@ -9,9 +9,9 @@ import (
 	"time"
 
 	pb "banka-backend/proto/banka"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/worker"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -162,8 +162,8 @@ func (h *BankHandler) ApplyForCredit(
 	}
 
 	return &pb.ApplyForCreditResponse{
-		Id:             zahtev.ID,
-		Status:         zahtev.Status,
+		Id:              zahtev.ID,
+		Status:          zahtev.Status,
 		DatumPodnosenja: zahtev.DatumPodnosenja.Format(time.RFC3339),
 	}, nil
 }

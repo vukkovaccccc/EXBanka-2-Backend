@@ -3,9 +3,9 @@
 package repository
 
 import (
+	"banka-backend/services/user-service/internal/domain"
 	"errors"
 	"time"
-	"banka-backend/services/user-service/internal/domain"
 
 	"gorm.io/gorm"
 )

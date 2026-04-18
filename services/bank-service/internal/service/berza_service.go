@@ -99,7 +99,7 @@ func (s *berzaService) GetMarketStatus(ctx context.Context, ex domain.Exchange) 
 		afterHoursEnd  = 20*60 + 0 // 20:00 — fiksno
 	)
 	openStart := ex.OpenTime.Hour()*60 + ex.OpenTime.Minute()
-	closeEnd  := ex.CloseTime.Hour()*60 + ex.CloseTime.Minute()
+	closeEnd := ex.CloseTime.Hour()*60 + ex.CloseTime.Minute()
 
 	switch {
 	case totalMin >= openStart && totalMin < closeEnd:

@@ -24,21 +24,21 @@ var baseRateByAmount = []struct {
 	maxRSD float64
 	rate   float64
 }{
-	{500_000, 0.0625},       // do   500.000 RSD  → 6,25 %
-	{1_000_000, 0.0600},     // do 1.000.000 RSD  → 6,00 %
-	{5_000_000, 0.0575},     // do 5.000.000 RSD  → 5,75 %
-	{10_000_000, 0.0550},    // do 10.000.000 RSD → 5,50 %
-	{20_000_000, 0.0525},    // do 20.000.000 RSD → 5,25 %
+	{500_000, 0.0625},         // do   500.000 RSD  → 6,25 %
+	{1_000_000, 0.0600},       // do 1.000.000 RSD  → 6,00 %
+	{5_000_000, 0.0575},       // do 5.000.000 RSD  → 5,75 %
+	{10_000_000, 0.0550},      // do 10.000.000 RSD → 5,50 %
+	{20_000_000, 0.0525},      // do 20.000.000 RSD → 5,25 %
 	{math.MaxFloat64, 0.0475}, // iznad 20.000.001 RSD → 4,75 %
 }
 
 // marginByType definiše maržu banke po vrsti kredita (Issue #4).
 var marginByType = map[string]float64{
-	"GOTOVINSKI":    0.0175, // 1,75 %
-	"STAMBENI":      0.0150, // 1,50 %
-	"AUTO":          0.0125, // 1,25 %
+	"GOTOVINSKI":      0.0175, // 1,75 %
+	"STAMBENI":        0.0150, // 1,50 %
+	"AUTO":            0.0125, // 1,25 %
 	"REFINANSIRAJUCI": 0.0100, // 1,00 %
-	"STUDENTSKI":    0.0075, // 0,75 %
+	"STUDENTSKI":      0.0075, // 0,75 %
 }
 
 // rsdEquivalentRates aproksimativni kursevi za konverziju stranih valuta u RSD.

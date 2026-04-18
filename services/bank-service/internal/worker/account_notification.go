@@ -10,11 +10,11 @@ import (
 
 // Tipovi account email evenata — koriste se kao vrednost polja Type.
 const (
-	AccountCreatedType        = "ACCOUNT_CREATED"
-	CardStatusChangedType     = "CARD_STATUS_CHANGED"
-	CardCreatedType           = "KREIRANA_KARTICA"
-	KreditPodnetType          = "KREDIT_PODNET"
-	KreditRataUpozorenjeType  = "KREDIT_RATA_UPOZORENJE"
+	AccountCreatedType       = "ACCOUNT_CREATED"
+	CardStatusChangedType    = "CARD_STATUS_CHANGED"
+	CardCreatedType          = "KREIRANA_KARTICA"
+	KreditPodnetType         = "KREDIT_PODNET"
+	KreditRataUpozorenjeType = "KREDIT_RATA_UPOZORENJE"
 )
 
 // AccountEmailEvent je payload za account-related emailove.

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 
 	"gorm.io/gorm"
 )
@@ -92,8 +92,8 @@ func (h *FundHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // extractFundID parses the fund ID from a path like /bank/funds/3/invest.
 func extractFundID(path, suffix string) int64 {
-	trimmed := strings.TrimSuffix(path, suffix)               // /bank/funds/3
-	parts := strings.Split(trimmed, "/")                      // ["", "bank", "funds", "3"]
+	trimmed := strings.TrimSuffix(path, suffix) // /bank/funds/3
+	parts := strings.Split(trimmed, "/")        // ["", "bank", "funds", "3"]
 	if len(parts) == 0 {
 		return 0
 	}
@@ -294,9 +294,9 @@ func (h *FundHandler) invest(w http.ResponseWriter, r *http.Request, claims *aut
 	`, fundID, userID, accountID, amountRSD)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":     "Investicija je uspešno obavljena.",
-		"amountRsd":   amountRSD,
-		"fundId":      strconv.FormatInt(fundID, 10),
+		"message":   "Investicija je uspešno obavljena.",
+		"amountRsd": amountRSD,
+		"fundId":    strconv.FormatInt(fundID, 10),
 	})
 }
 
@@ -304,7 +304,7 @@ func (h *FundHandler) invest(w http.ResponseWriter, r *http.Request, claims *aut
 
 type withdrawRequest struct {
 	AccountID   string  `json:"accountId"`
-	AmountRSD   float64 `json:"amountRsd"`   // amount to withdraw in RSD (0 = full withdrawal)
+	AmountRSD   float64 `json:"amountRsd"` // amount to withdraw in RSD (0 = full withdrawal)
 	WithdrawAll bool    `json:"withdrawAll"`
 }
 
@@ -386,10 +386,10 @@ func (h *FundHandler) withdraw(w http.ResponseWriter, r *http.Request, claims *a
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":       "Povlačenje je uspešno obavljeno.",
-		"withdrawnRsd":  withdrawRSD,
+		"message":        "Povlačenje je uspešno obavljeno.",
+		"withdrawnRsd":   withdrawRSD,
 		"creditedAmount": creditAmount,
-		"currency":      accCurrency,
+		"currency":       accCurrency,
 	})
 }
 

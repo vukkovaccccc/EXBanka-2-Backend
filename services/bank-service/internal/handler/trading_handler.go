@@ -8,10 +8,10 @@ import (
 	"time"
 
 	pb "banka-backend/proto/banka"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/trading"
 	tradingworker "banka-backend/services/bank-service/internal/trading/worker"
+	auth "banka-backend/shared/auth"
 
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
@@ -135,9 +135,9 @@ func (h *BankHandler) TradingCalculate(ctx context.Context, req *pb.TradingCalcu
 	}
 
 	out := &pb.TradingCalculateResponse{
-		PricePerUnit:    resp.PricePerUnit.String(),
+		PricePerUnit:     resp.PricePerUnit.String(),
 		ApproximatePrice: resp.ApproximatePrice.String(),
-		Commission:      resp.Commission.String(),
+		Commission:       resp.Commission.String(),
 	}
 	if resp.InitialMarginCost != nil {
 		v := resp.InitialMarginCost.String()

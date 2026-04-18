@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/service"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc/metadata"
 )

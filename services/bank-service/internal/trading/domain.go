@@ -163,7 +163,7 @@ type Order struct {
 	// Populated for STOP and STOP_LIMIT orders (future sprint).
 	StopPrice *decimal.Decimal
 
-	Status    OrderStatus
+	Status OrderStatus
 	// ApprovedBy is nil for PENDING orders. Auto-approved orders store the literal
 	// "No need for approval". Supervisor actions store the supervisor's user ID as decimal text.
 	ApprovedBy *string

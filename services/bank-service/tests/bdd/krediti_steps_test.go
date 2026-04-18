@@ -21,11 +21,11 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	pb "banka-backend/proto/banka"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/handler"
 	"banka-backend/services/bank-service/internal/worker"
 	"banka-backend/services/bank-service/mocks"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -70,10 +70,10 @@ type nopT struct {
 func (n *nopT) Errorf(format string, args ...interface{}) {
 	n.err = fmt.Errorf(format, args...)
 }
-func (n *nopT) FailNow()                          {}
-func (n *nopT) Cleanup(f func())                  { f() }
-func (n *nopT) Logf(_ string, _ ...interface{})   {}
-func (n *nopT) Helper()                           {}
+func (n *nopT) FailNow()                        {}
+func (n *nopT) Cleanup(f func())                { f() }
+func (n *nopT) Logf(_ string, _ ...interface{}) {}
+func (n *nopT) Helper()                         {}
 
 // ─── scenarioCtx — stanje po scenariju ───────────────────────────────────────
 

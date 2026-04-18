@@ -16,9 +16,9 @@ var fallbackMidRates = map[string]float64{
 	"CHF": 126.75,
 	"USD": 107.75,
 	"GBP": 136.75,
-	"JPY":   0.69,
-	"CAD":  75.50,
-	"AUD":  68.50,
+	"JPY": 0.69,
+	"CAD": 75.50,
+	"AUD": 68.50,
 }
 
 type exchangeService struct {
@@ -161,8 +161,8 @@ func (s *exchangeService) CalculateExchange(
 	fromRate := buildRate(fromOznaka, fromMid, s.spreadRate)
 	toRate := buildRate(toOznaka, toMid, s.spreadRate)
 
-	rsdAmount := amount * fromRate.Kupovni     // prodajemo fromOznaka, dobijamo RSD
-	bruto := rsdAmount / toRate.Prodajni       // kupujemo toOznaka za RSD
+	rsdAmount := amount * fromRate.Kupovni // prodajemo fromOznaka, dobijamo RSD
+	bruto := rsdAmount / toRate.Prodajni   // kupujemo toOznaka za RSD
 	p := bruto * s.provizijaRate
 
 	return &domain.ExchangeConversionResult{

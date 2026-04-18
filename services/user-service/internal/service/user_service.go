@@ -3,9 +3,9 @@
 package service
 
 import (
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/user-service/internal/domain"
 	"banka-backend/services/user-service/internal/utils"
+	auth "banka-backend/shared/auth"
 )
 
 // userService implements domain.UserService.

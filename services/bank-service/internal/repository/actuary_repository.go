@@ -182,14 +182,14 @@ func (r *actuaryRepository) IncrementUsedLimitIfWithin(ctx context.Context, empl
 	`, amountStr, employeeID)
 
 	var (
-		id          int64
-		empID       int64
-		actuaryType string
-		lim         string
-		usedLim     string
+		id           int64
+		empID        int64
+		actuaryType  string
+		lim          string
+		usedLim      string
 		needApproval bool
-		createdAt   interface{}
-		updatedAt   interface{}
+		createdAt    interface{}
+		updatedAt    interface{}
 	)
 	err := row.Scan(&id, &empID, &actuaryType, &lim, &usedLim, &needApproval, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -293,4 +293,3 @@ func (r *actuaryRepository) InsertActuaryLimitAudit(
 	}
 	return nil
 }
-

@@ -22,9 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	pb "banka-backend/proto/banka"
 	pbactuary "banka-backend/proto/actuary"
-	auth "banka-backend/shared/auth"
+	pb "banka-backend/proto/banka"
 	"banka-backend/services/bank-service/internal/config"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/handler"
@@ -34,6 +33,7 @@ import (
 	tradingworker "banka-backend/services/bank-service/internal/trading/worker"
 	"banka-backend/services/bank-service/internal/transport"
 	"banka-backend/services/bank-service/internal/worker"
+	auth "banka-backend/shared/auth"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -264,22 +264,22 @@ func main() {
 	// Kombinovani HTTP mux: gRPC-Gateway + direktni HTTP handleri.
 	httpMux := http.NewServeMux()
 	httpMux.Handle("GET /bank/admin/exchanges/test-mode", marketModeHTTPHandler) // GET /bank/admin/exchanges/test-mode
-	httpMux.Handle("/bank/payments/", receiptHandler)                           // GET /bank/payments/{id}/receipt
-	httpMux.Handle("/bank/client/exchange-transfers", exchangeTransferHandler) // POST /bank/client/exchange-transfers
-	httpMux.Handle("/bank/exchange-rates", exchangeRateHandler)                // GET /bank/exchange-rates[?from=X&to=Y&amount=Z]
-	httpMux.Handle("/bank/exchange-rates/execute", exchangeRateHandler)        // POST /bank/exchange-rates/execute
-	httpMux.Handle("POST /bank/cards/request", karticaRequestHandler)           // POST /bank/cards/request (Flow 2 Korak 1)
-	httpMux.Handle("POST /bank/cards/confirm", karticaRequestHandler)           // POST /bank/cards/confirm (Flow 2 Korak 2)
-	httpMux.Handle("GET /bank/cards/my", klientKarticeHandler)                  // GET  /bank/cards/my (klijentske kartice)
-	httpMux.Handle("PATCH /bank/cards/{id}/block", klientKarticeHandler)        // PATCH /bank/cards/{id}/block (blokiranje)
-	httpMux.Handle("/bank/internal/actuary/", internalActuaryHandler)           // POST/DELETE — user-service interni pozivi
+	httpMux.Handle("/bank/payments/", receiptHandler)                            // GET /bank/payments/{id}/receipt
+	httpMux.Handle("/bank/client/exchange-transfers", exchangeTransferHandler)   // POST /bank/client/exchange-transfers
+	httpMux.Handle("/bank/exchange-rates", exchangeRateHandler)                  // GET /bank/exchange-rates[?from=X&to=Y&amount=Z]
+	httpMux.Handle("/bank/exchange-rates/execute", exchangeRateHandler)          // POST /bank/exchange-rates/execute
+	httpMux.Handle("POST /bank/cards/request", karticaRequestHandler)            // POST /bank/cards/request (Flow 2 Korak 1)
+	httpMux.Handle("POST /bank/cards/confirm", karticaRequestHandler)            // POST /bank/cards/confirm (Flow 2 Korak 2)
+	httpMux.Handle("GET /bank/cards/my", klientKarticeHandler)                   // GET  /bank/cards/my (klijentske kartice)
+	httpMux.Handle("PATCH /bank/cards/{id}/block", klientKarticeHandler)         // PATCH /bank/cards/{id}/block (blokiranje)
+	httpMux.Handle("/bank/internal/actuary/", internalActuaryHandler)            // POST/DELETE — user-service interni pozivi
 	httpMux.Handle("GET /bank/trading/my-orders", myOrdersHandler)               // GET /bank/trading/my-orders — caller's own orders (all roles)
 	httpMux.Handle("POST /bank/trading/fx-breakdown", tradingFXHandler)          // POST /bank/trading/fx-breakdown — FX transparency za klijente
-	httpMux.Handle("/bank/portfolio/", portfolioHandler)                        // GET /bank/portfolio/my, POST /bank/portfolio/publish, POST /bank/portfolio/exercise
-	httpMux.Handle("/bank/tax/", taxHandler)                                    // GET /bank/tax/users, POST /bank/tax/calculate
-	httpMux.Handle("/bank/funds/", fundHandler)                                 // GET /bank/funds, POST /bank/funds/{id}/invest, POST /bank/funds/{id}/withdraw
-	httpMux.Handle("/bank/funds", fundHandler)                                  // GET /bank/funds (without trailing slash)
-	httpMux.Handle("/", gwMux)                                                  // sve ostalo → gRPC-Gateway
+	httpMux.Handle("/bank/portfolio/", portfolioHandler)                         // GET /bank/portfolio/my, POST /bank/portfolio/publish, POST /bank/portfolio/exercise
+	httpMux.Handle("/bank/tax/", taxHandler)                                     // GET /bank/tax/users, POST /bank/tax/calculate
+	httpMux.Handle("/bank/funds/", fundHandler)                                  // GET /bank/funds, POST /bank/funds/{id}/invest, POST /bank/funds/{id}/withdraw
+	httpMux.Handle("/bank/funds", fundHandler)                                   // GET /bank/funds (without trailing slash)
+	httpMux.Handle("/", gwMux)                                                   // sve ostalo → gRPC-Gateway
 
 	gatewaySrv := &http.Server{
 		Addr:         cfg.HTTPAddr,

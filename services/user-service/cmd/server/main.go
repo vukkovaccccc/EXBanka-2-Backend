@@ -22,13 +22,13 @@ import (
 	"time"
 
 	pb "banka-backend/proto/user"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/user-service/internal/config"
 	dbsqlc "banka-backend/services/user-service/internal/database/sqlc"
 	userhandler "banka-backend/services/user-service/internal/handler"
 	userservice "banka-backend/services/user-service/internal/service"
 	"banka-backend/services/user-service/internal/transport"
 	"banka-backend/services/user-service/internal/utils"
+	auth "banka-backend/shared/auth"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx" driver for database/sql
@@ -76,11 +76,11 @@ func main() {
 	authInterceptor := auth.NewAuthInterceptor(cfg.JWTAccessSecret, []string{
 		pb.UserService_HealthCheck_FullMethodName,
 		pb.UserService_Login_FullMethodName,
-		pb.UserService_SetPassword_FullMethodName,     // activation token is the credential, no access token
+		pb.UserService_SetPassword_FullMethodName, // activation token is the credential, no access token
 		pb.UserService_ActivateAccount_FullMethodName,
-		pb.UserService_RefreshToken_FullMethodName,    // carries a refresh token, not an access token
-		pb.UserService_ForgotPassword_FullMethodName,  // unauthenticated — only an email is provided
-		pb.UserService_ResetPassword_FullMethodName,   // reset token is the credential, no access token
+		pb.UserService_RefreshToken_FullMethodName,   // carries a refresh token, not an access token
+		pb.UserService_ForgotPassword_FullMethodName, // unauthenticated — only an email is provided
+		pb.UserService_ResetPassword_FullMethodName,  // reset token is the credential, no access token
 	})
 	grpcSrv := transport.NewGRPCServer(cfg.GRPCAddr, authInterceptor.Unary())
 

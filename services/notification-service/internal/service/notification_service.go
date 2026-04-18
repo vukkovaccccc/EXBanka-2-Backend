@@ -76,9 +76,9 @@ func NewEmailService(cfg *config.Config, sender smtp.Sender) *EmailService {
 			"ACCOUNT_CREATED":        {subject: "Your EXBanka2 Account Has Been Created", tmpl: must("account_created", accountCreatedTmpl)},
 			"CARD_OTP":               {subject: "EXBanka2 \u2014 Card Verification Code", tmpl: must("card_otp", cardOTPTmpl)},
 			"CARD_STATUS_CHANGED":    {subject: "EXBanka2 \u2014 Card Status Update", tmpl: must("card_status_changed", cardStatusChangedTmpl)},
-			"KREIRANA_KARTICA":          {subject: "EXBanka2 \u2014 Nova platna kartica kreirana", tmpl: must("card_created", cardCreatedTmpl)},
-			"KREDIT_PODNET":             {subject: "EXBanka2 \u2014 Zahtev za kredit primljen", tmpl: must("kredit_podnet", kreditPodnetTmpl)},
-			"KREDIT_RATA_UPOZORENJE":    {subject: "EXBanka2 \u2014 Upozorenje o naplati rate kredita", tmpl: must("kredit_rata_upozorenje", kreditRataUpozorenjeTmpl)},
+			"KREIRANA_KARTICA":       {subject: "EXBanka2 \u2014 Nova platna kartica kreirana", tmpl: must("card_created", cardCreatedTmpl)},
+			"KREDIT_PODNET":          {subject: "EXBanka2 \u2014 Zahtev za kredit primljen", tmpl: must("kredit_podnet", kreditPodnetTmpl)},
+			"KREDIT_RATA_UPOZORENJE": {subject: "EXBanka2 \u2014 Upozorenje o naplati rate kredita", tmpl: must("kredit_rata_upozorenje", kreditRataUpozorenjeTmpl)},
 		},
 	}
 }

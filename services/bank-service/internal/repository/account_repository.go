@@ -496,17 +496,17 @@ func (r *accountRepository) RenameAccount(ctx context.Context, input domain.Rena
 
 // pendingActionModel je GORM projekcija tabele pending_action.
 type pendingActionModel struct {
-	ID               int64     `gorm:"column:id;primaryKey;autoIncrement"`
-	VlasnikID        int64     `gorm:"column:vlasnik_id"`
-	RacunID          int64     `gorm:"column:racun_id"`
-	ActionType       string    `gorm:"column:action_type"`
-	ParamsJSON       string    `gorm:"column:params_json"`
-	Opis             string    `gorm:"column:opis"`
-	Status           string    `gorm:"column:status"`
-	VerificationCode *string   `gorm:"column:verification_code"`
+	ID               int64      `gorm:"column:id;primaryKey;autoIncrement"`
+	VlasnikID        int64      `gorm:"column:vlasnik_id"`
+	RacunID          int64      `gorm:"column:racun_id"`
+	ActionType       string     `gorm:"column:action_type"`
+	ParamsJSON       string     `gorm:"column:params_json"`
+	Opis             string     `gorm:"column:opis"`
+	Status           string     `gorm:"column:status"`
+	VerificationCode *string    `gorm:"column:verification_code"`
 	CodeExpiresAt    *time.Time `gorm:"column:code_expires_at"`
-	Attempts         int       `gorm:"column:attempts"`
-	CreatedAt        time.Time `gorm:"column:created_at"`
+	Attempts         int        `gorm:"column:attempts"`
+	CreatedAt        time.Time  `gorm:"column:created_at"`
 }
 
 func (pendingActionModel) TableName() string { return "core_banking.pending_action" }

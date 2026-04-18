@@ -11,11 +11,11 @@ import (
 	"time"
 
 	pb "banka-backend/proto/banka"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/trading"
 	"banka-backend/services/bank-service/internal/transport"
 	"banka-backend/services/bank-service/internal/worker"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -300,15 +300,15 @@ func (h *BankHandler) GetClientAccounts(ctx context.Context, _ *emptypb.Empty) (
 	pbAccounts := make([]*pb.AccountListItem, 0, len(accounts))
 	for _, a := range accounts {
 		pbAccounts = append(pbAccounts, &pb.AccountListItem{
-			Id:                 a.ID,
-			BrojRacuna:         a.BrojRacuna,
-			NazivRacuna:        a.NazivRacuna,
-			VrstaRacuna:        a.VrstaRacuna,
-			KategorijaRacuna:   a.KategorijaRacuna,
-			ValutaOznaka:       a.ValutaOznaka,
-			StanjeRacuna:       a.StanjeRacuna,
+			Id:                  a.ID,
+			BrojRacuna:          a.BrojRacuna,
+			NazivRacuna:         a.NazivRacuna,
+			VrstaRacuna:         a.VrstaRacuna,
+			KategorijaRacuna:    a.KategorijaRacuna,
+			ValutaOznaka:        a.ValutaOznaka,
+			StanjeRacuna:        a.StanjeRacuna,
 			RezervisanaSredstva: a.RezervovanaSredstva,
-			RaspolozivoStanje:  a.RaspolozivoStanje,
+			RaspolozivoStanje:   a.RaspolozivoStanje,
 		})
 	}
 
@@ -334,17 +334,17 @@ func (h *BankHandler) GetAccountDetail(ctx context.Context, req *pb.GetAccountDe
 	}
 
 	pbDetail := &pb.AccountDetail{
-		Id:                 detail.ID,
-		BrojRacuna:         detail.BrojRacuna,
-		NazivRacuna:        detail.NazivRacuna,
-		VrstaRacuna:        detail.VrstaRacuna,
-		KategorijaRacuna:   detail.KategorijaRacuna,
-		ValutaOznaka:       detail.ValutaOznaka,
-		StanjeRacuna:       detail.StanjeRacuna,
+		Id:                  detail.ID,
+		BrojRacuna:          detail.BrojRacuna,
+		NazivRacuna:         detail.NazivRacuna,
+		VrstaRacuna:         detail.VrstaRacuna,
+		KategorijaRacuna:    detail.KategorijaRacuna,
+		ValutaOznaka:        detail.ValutaOznaka,
+		StanjeRacuna:        detail.StanjeRacuna,
 		RezervisanaSredstva: detail.RezervovanaSredstva,
-		RaspolozivoStanje:  detail.RaspolozivoStanje,
-		DnevniLimit:        detail.DnevniLimit,
-		MesecniLimit:       detail.MesecniLimit,
+		RaspolozivoStanje:   detail.RaspolozivoStanje,
+		DnevniLimit:         detail.DnevniLimit,
+		MesecniLimit:        detail.MesecniLimit,
 	}
 	if detail.NazivFirme != nil {
 		pbDetail.NazivFirme = detail.NazivFirme

@@ -30,8 +30,8 @@ type PriceTickPublisher interface {
 //
 // Podržani tipovi i hijerarhija izvora:
 //   - STOCK:  EODHD real-time (primarni) → Finnhub Quote → (opciono sintetika ako LISTING_REQUIRE_LIVE_QUOTES=false)
-//             AlphaVantage Company Overview jednom dnevno (detalji)
-//             EODHD EOD istorija za seed → Finnhub Candles (fallback)
+//     AlphaVantage Company Overview jednom dnevno (detalji)
+//     EODHD EOD istorija za seed → Finnhub Candles (fallback)
 //   - FOREX:  EODHD real-time (primarni) → AlphaVantage → Finnhub → (sintetika samo ako requireLive=false)
 //   - FUTURE: EODHD real-time commodity (primarni) → (random walk samo ako requireLive=false)
 //   - OPTION: Yahoo Finance opcijski lanac (EODHD options su paid addon)

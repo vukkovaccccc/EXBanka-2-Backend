@@ -30,8 +30,8 @@ type yahooChartEnvelope struct {
 			Description string `json:"description"`
 		} `json:"error"`
 		Result []struct {
-			Timestamp []int64 `json:"timestamp"`
-			Indicators  struct {
+			Timestamp  []int64 `json:"timestamp"`
+			Indicators struct {
 				Quote []struct {
 					Open   []*float64 `json:"open"`
 					High   []*float64 `json:"high"`

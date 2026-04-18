@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 )
 
 // MarketModeHTTPHandler obrađuje GET /bank/admin/exchanges/test-mode.

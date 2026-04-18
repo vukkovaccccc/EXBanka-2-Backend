@@ -76,11 +76,12 @@ func (h *BankHandler) ToggleMarketTestMode(ctx context.Context, req *pb.ToggleMa
 // exchangeToProto mapira domenski Exchange + izračunati MarketStatus u proto poruku.
 //
 // Konverzija MarketStatus:
-//   domain.MarketStatus je string ("OPEN", "PRE_MARKET", "AFTER_HOURS", "CLOSED").
-//   pb.MarketStatus je int32 enum generisan od strane protoc.
-//   pb.MarketStatus_value je map[string]int32 koji protoc generiše automatski —
-//   mapira ime enum vrednosti na njenu int32 vrednost.
-//   Kastujemo int32 u pb.MarketStatus tip.
+//
+//	domain.MarketStatus je string ("OPEN", "PRE_MARKET", "AFTER_HOURS", "CLOSED").
+//	pb.MarketStatus je int32 enum generisan od strane protoc.
+//	pb.MarketStatus_value je map[string]int32 koji protoc generiše automatski —
+//	mapira ime enum vrednosti na njenu int32 vrednost.
+//	Kastujemo int32 u pb.MarketStatus tip.
 func exchangeToProto(e domain.Exchange, ms domain.MarketStatus) *pb.Exchange {
 	return &pb.Exchange{
 		Id:           e.ID,

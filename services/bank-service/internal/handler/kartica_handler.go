@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/worker"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc/metadata"
 )

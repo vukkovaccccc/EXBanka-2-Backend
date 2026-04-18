@@ -95,11 +95,11 @@ func TestBaseRateForAmount_Tiers(t *testing.T) {
 
 func TestMarginByType_AllValues(t *testing.T) {
 	expected := map[string]float64{
-		"GOTOVINSKI":     0.0175,
-		"STAMBENI":       0.0150,
-		"AUTO":           0.0125,
+		"GOTOVINSKI":      0.0175,
+		"STAMBENI":        0.0150,
+		"AUTO":            0.0125,
 		"REFINANSIRAJUCI": 0.0100,
-		"STUDENTSKI":     0.0075,
+		"STUDENTSKI":      0.0075,
 	}
 
 	assert.Len(t, marginByType, len(expected), "broj vrsta kredita se ne poklapa")

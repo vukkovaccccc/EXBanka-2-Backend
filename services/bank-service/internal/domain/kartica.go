@@ -29,7 +29,7 @@ var (
 
 	// Portal zaposlenih — promena statusa kartice
 	ErrNedozvoljenaPromenaSatusa = errors.New("nedozvoljena promena statusa kartice")
-	ErrKarticaVecAktivna        = errors.New("kartica je već aktivna")
+	ErrKarticaVecAktivna         = errors.New("kartica je već aktivna")
 
 	// Flow 2 Korak 2 — verifikacija OTP-a
 	ErrCardRequestNotFound = errors.New("nema aktivnog zahteva za karticu — pokrenite novi zahtev")
@@ -67,7 +67,7 @@ type Kartica struct {
 type CreateKarticaInput struct {
 	RacunID        int64
 	BrojKartice    string
-	TipKartice     string    // VISA | MASTERCARD | DINACARD | AMEX
+	TipKartice     string // VISA | MASTERCARD | DINACARD | AMEX
 	VrstaKartice   string
 	CvvKodHash     string    // HMAC-SHA256(cvv, pepper) — tačno 64 hex karaktera
 	DatumKreiranja time.Time // eksplicitno postavljeno u servisu — sprečava zero-value (0001-01-01)
@@ -115,10 +115,10 @@ type OvlascenoLiceInput struct {
 
 // RequestKarticaInput je ulaz za servisnu metodu Flow 2 (klijent inicira zahtev).
 type RequestKarticaInput struct {
-	RacunID      int64
-	VlasnikID    int64  // iz JWT tokena
-	VlasnikEmail string // dohvaćen iz user-service, koristi se za slanje OTP-a
-	TipKartice   string // VISA | MASTERCARD | DINACARD | AMEX — čuva se u Redis state-u
+	RacunID       int64
+	VlasnikID     int64               // iz JWT tokena
+	VlasnikEmail  string              // dohvaćen iz user-service, koristi se za slanje OTP-a
+	TipKartice    string              // VISA | MASTERCARD | DINACARD | AMEX — čuva se u Redis state-u
 	OvlascenoLice *OvlascenoLiceInput // nil = kartica za vlasnika; !nil = za ovlašćeno lice
 }
 
@@ -131,8 +131,8 @@ type ConfirmKarticaInput struct {
 // RacunVlasnikInfo sadrži podatke o računu potrebne za Flow 2 validaciju.
 type RacunVlasnikInfo struct {
 	VlasnikID    int64
-	VrstaRacuna  string  // "LICNI" | "POSLOVNI"
-	Status       string  // "AKTIVAN" | ...
+	VrstaRacuna  string // "LICNI" | "POSLOVNI"
+	Status       string // "AKTIVAN" | ...
 	MesecniLimit float64
 }
 
@@ -175,7 +175,7 @@ type KarticaZaStatusChange struct {
 // Sadrži sve podatke potrebne za Korak 2 (verifikacija OTP-a i kreiranje kartice).
 type CardRequestState struct {
 	AccountID     int64               `json:"account_id"`
-	TipKartice    string              `json:"tip_kartice"`              // VISA | MASTERCARD | DINACARD | AMEX
+	TipKartice    string              `json:"tip_kartice"` // VISA | MASTERCARD | DINACARD | AMEX
 	OvlascenoLice *OvlascenoLiceInput `json:"authorized_person,omitempty"`
 	OTPCode       string              `json:"otp_code"`
 	Attempts      int                 `json:"attempts"`

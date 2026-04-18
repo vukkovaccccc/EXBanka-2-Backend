@@ -37,7 +37,7 @@ import (
 
 type tradingService struct {
 	orders    OrderRepository
-	listings  domain.ListingService  // ListingService (not Repository) — provides MaintenanceMargin
+	listings  domain.ListingService // ListingService (not Repository) — provides MaintenanceMargin
 	actuaries domain.ActuaryRepository
 	margin    MarginChecker
 	funds     FundsManager
@@ -69,10 +69,11 @@ func NewTradingService(
 // Margin=true — also computes and returns the initial margin cost.
 //
 // Price-per-unit resolution per order type:
-//   MARKET     → current Ask (BUY) or Bid (SELL) from live listing data
-//   LIMIT      → user-supplied PricePerUnit (limit value)
-//   STOP       → user-supplied StopPrice   (stop trigger value)
-//   STOP_LIMIT → user-supplied PricePerUnit (limit value; stop is only the trigger)
+//
+//	MARKET     → current Ask (BUY) or Bid (SELL) from live listing data
+//	LIMIT      → user-supplied PricePerUnit (limit value)
+//	STOP       → user-supplied StopPrice   (stop trigger value)
+//	STOP_LIMIT → user-supplied PricePerUnit (limit value; stop is only the trigger)
 func (s *tradingService) CalculateOrderDetails(ctx context.Context, req *OrderCalculationRequest) (*OrderCalculationResponse, error) {
 	if req.Direction != OrderDirectionBuy && req.Direction != OrderDirectionSell {
 		return nil, ErrInvalidDirection
@@ -431,10 +432,10 @@ func (s *tradingService) resolveTotalBuyDebitUSD(ctx context.Context, req *Creat
 // validateMargin fetches the listing's InitialMarginCost and validates whether
 // the user satisfies the margin condition from the spec:
 //
-//   Klijent:  (1) ima odobren kredit > IMC  ILI  (2) slobodan balans računa >= IMC
-//   Aktuar:   slobodan balans bankinog trezor računa u USD >= IMC
-//             (IMC je izračunat iz USD cene hartije; aktuar ne bira lični račun —
-//              backend automatski pronalazi USD trezor banke)
+//	Klijent:  (1) ima odobren kredit > IMC  ILI  (2) slobodan balans računa >= IMC
+//	Aktuar:   slobodan balans bankinog trezor računa u USD >= IMC
+//	          (IMC je izračunat iz USD cene hartije; aktuar ne bira lični račun —
+//	           backend automatski pronalazi USD trezor banke)
 //
 // Returns ErrInsufficientMargin when the condition is not satisfied.
 // Returns a descriptive error when the trezor account does not exist for the currency.

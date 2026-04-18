@@ -145,12 +145,12 @@ func (m rataModel) toDomain() domain.Rata {
 // transakcijaModel je minimalna GORM projekcija za kreiranje transakcija u
 // okviru kreditnih operacija (depo pri odobravanju; isplata pri naplati rate).
 type transakcijaInsertModel struct {
-	RacunID          int64   `gorm:"column:racun_id"`
-	TipTransakcije   string  `gorm:"column:tip_transakcije"`
-	Iznos            float64 `gorm:"column:iznos"`
-	Opis             string  `gorm:"column:opis"`
+	RacunID          int64     `gorm:"column:racun_id"`
+	TipTransakcije   string    `gorm:"column:tip_transakcije"`
+	Iznos            float64   `gorm:"column:iznos"`
+	Opis             string    `gorm:"column:opis"`
 	VremeIzvrsavanja time.Time `gorm:"column:vreme_izvrsavanja"`
-	Status           string  `gorm:"column:status;default:IZVRSEN"`
+	Status           string    `gorm:"column:status;default:IZVRSEN"`
 }
 
 func (transakcijaInsertModel) TableName() string {

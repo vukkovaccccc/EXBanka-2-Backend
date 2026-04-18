@@ -17,9 +17,9 @@ import (
 	"strconv"
 	"strings"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
 	"banka-backend/services/bank-service/internal/trading"
+	auth "banka-backend/shared/auth"
 
 	"github.com/shopspring/decimal"
 )

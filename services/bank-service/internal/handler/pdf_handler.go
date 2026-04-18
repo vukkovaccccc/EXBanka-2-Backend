@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 )
 
 // PaymentReceiptHandler vraća HTML potvrdu o izvršenom plaćanju.

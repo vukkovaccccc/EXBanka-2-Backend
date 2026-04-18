@@ -34,7 +34,7 @@ type KreditniZahtev struct {
 	PeriodZaposlenja  int32  // u mesecima
 	KontaktTelefon    string
 	BrojRacuna        string
-	RokOtplate        int32 // u mesecima
+	RokOtplate        int32  // u mesecima
 	Status            string // NA_CEKANJU | ODOBREN | ODBIJEN
 	DatumPodnosenja   time.Time
 }
@@ -47,11 +47,11 @@ type KreditniZahtev struct {
 type Kredit struct {
 	ID                    int64
 	BrojKredita           string
-	KreditniZahtevID      *int64     // nil u edge case scenarijima
+	KreditniZahtevID      *int64 // nil u edge case scenarijima
 	BrojRacuna            string
 	VlasnikID             int64
-	VrstaKredita          string  // GOTOVINSKI | STAMBENI | AUTO | REFINANSIRAJUCI | STUDENTSKI
-	TipKamate             string  // FIKSNI | VARIJABILNI
+	VrstaKredita          string // GOTOVINSKI | STAMBENI | AUTO | REFINANSIRAJUCI | STUDENTSKI
+	TipKamate             string // FIKSNI | VARIJABILNI
 	IznosKredita          float64
 	PeriodOtplate         int32   // inicijalni broj rata (meseci)
 	NominalnaKamatnaStopa float64 // godišnja nominalna stopa, npr. 6.5

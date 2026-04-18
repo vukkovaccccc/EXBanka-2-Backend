@@ -134,9 +134,9 @@ func (r *paymentRecipientRepository) Update(ctx context.Context, recipient *doma
 		Model(&paymentRecipientModel{}).
 		Where("id = ? AND vlasnik_id = ?", recipient.ID, recipient.VlasnikID).
 		Updates(map[string]interface{}{
-			"naziv":      recipient.Naziv,
+			"naziv":       recipient.Naziv,
 			"broj_racuna": recipient.BrojRacuna,
-			"updated_at": time.Now().UTC(),
+			"updated_at":  time.Now().UTC(),
 		})
 	if result.Error != nil {
 		return result.Error
@@ -803,10 +803,10 @@ func (r *paymentRepository) VerifyAndExecute(ctx context.Context, input domain.V
 		if err := tx.Model(&paymentIntentModel{}).
 			Where("id = ?", intent.ID).
 			Updates(map[string]interface{}{
-				"status":       "REALIZOVANO",
+				"status":        "REALIZOVANO",
 				"krajnji_iznos": krajnjiIznos,
-				"verified_at":  now,
-				"executed_at":  now,
+				"verified_at":   now,
+				"executed_at":   now,
 			}).Error; err != nil {
 			return fmt.Errorf("ažuriraj intent: %w", err)
 		}
@@ -937,9 +937,9 @@ var paymentFallbackRates = map[string]float64{
 	"CHF": 126.75,
 	"USD": 107.75,
 	"GBP": 136.75,
-	"JPY":   0.69,
-	"CAD":  75.50,
-	"AUD":  68.50,
+	"JPY": 0.69,
+	"CAD": 75.50,
+	"AUD": 68.50,
 }
 
 // paymentProvizijaRate je stopa provizije za cross-currency plaćanja (0.5%).

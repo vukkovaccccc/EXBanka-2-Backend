@@ -9,18 +9,18 @@ import (
 // ─── Greške validacije ────────────────────────────────────────────────────────
 
 var (
-	ErrInvalidCurrency    = errors.New("nevalidna valuta za kategoriju računa")
-	ErrInvalidPodvrsta    = errors.New("nevalidna podvrsta za tip računa")
-	ErrAccountNotFound    = errors.New("račun nije pronađen")
-	ErrForbidden          = errors.New("pristup odbijen")
-	ErrNazivVecPostoji    = errors.New("naziv računa već postoji")
-	ErrNazivIsti          = errors.New("novi naziv je isti kao trenutni")
-	ErrPendingNotFound       = errors.New("zahtev nije pronađen")
-	ErrAlreadyApproved       = errors.New("zahtev je već obrađen")
-	ErrWrongCode             = errors.New("pogrešan verifikacioni kod")
-	ErrCodeExpired           = errors.New("verifikacioni kod je istekao")
-	ErrTooManyAttempts       = errors.New("previše neuspešnih pokušaja, zahtev je otkazan")
-	ErrPendingAlreadyExists  = errors.New("za ovaj račun već postoji aktivan zahtev za promenu limita — odobrite ili sačekajte da istekne")
+	ErrInvalidCurrency      = errors.New("nevalidna valuta za kategoriju računa")
+	ErrInvalidPodvrsta      = errors.New("nevalidna podvrsta za tip računa")
+	ErrAccountNotFound      = errors.New("račun nije pronađen")
+	ErrForbidden            = errors.New("pristup odbijen")
+	ErrNazivVecPostoji      = errors.New("naziv računa već postoji")
+	ErrNazivIsti            = errors.New("novi naziv je isti kao trenutni")
+	ErrPendingNotFound      = errors.New("zahtev nije pronađen")
+	ErrAlreadyApproved      = errors.New("zahtev je već obrađen")
+	ErrWrongCode            = errors.New("pogrešan verifikacioni kod")
+	ErrCodeExpired          = errors.New("verifikacioni kod je istekao")
+	ErrTooManyAttempts      = errors.New("previše neuspešnih pokušaja, zahtev je otkazan")
+	ErrPendingAlreadyExists = errors.New("za ovaj račun već postoji aktivan zahtev za promenu limita — odobrite ili sačekajte da istekne")
 )
 
 // Currency je čisti domenski objekat — ne zna za GORM niti za gRPC.
@@ -166,18 +166,18 @@ type UpdateLimitInput struct {
 
 // PendingAction je domenski objekat za akciju koja čeka mobilnu verifikaciju.
 type PendingAction struct {
-	ID              int64
-	VlasnikID       int64
-	RacunID         int64
-	ActionType      string
-	Opis            string
-	ParamsJSON      string
-	Status          string
-	BrojRacuna      string
-	ValutaOznaka    string
-	DnevniLimit     float64
-	MesecniLimit    float64
-	CreatedAt       time.Time
+	ID           int64
+	VlasnikID    int64
+	RacunID      int64
+	ActionType   string
+	Opis         string
+	ParamsJSON   string
+	Status       string
+	BrojRacuna   string
+	ValutaOznaka string
+	DnevniLimit  float64
+	MesecniLimit float64
+	CreatedAt    time.Time
 	// Polja za PLACANJE/PRENOS — popunjena iz payment_intent.
 	NazivPrimaoca      string
 	BrojRacunaPrimaoca string
@@ -186,9 +186,9 @@ type PendingAction struct {
 
 // VerifyLimitInput parametri za verifikaciju koda i primenu limita.
 type VerifyLimitInput struct {
-	VlasnikID  int64
-	ActionID   int64
-	Code       string
+	VlasnikID int64
+	ActionID  int64
+	Code      string
 }
 
 // AccountRepository definiše ugovor prema sloju podataka za operacije sa računima.

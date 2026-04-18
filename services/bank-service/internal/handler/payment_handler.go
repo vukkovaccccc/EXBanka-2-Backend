@@ -142,14 +142,14 @@ func (h *BankHandler) CreatePaymentIntent(ctx context.Context, req *pb.CreatePay
 	}
 
 	resp := &pb.CreatePaymentIntentResponse{
-		IntentId:   intent.ID,
-		ActionId:   actionID,
-		BrojNaloga: intent.BrojNaloga,
-		Status:     intent.Status,
-		Valuta:     intent.ValutaOznaka,
-		Iznos:      intent.Iznos,
-		Provizija:  intent.Provizija,
-		Kurs:       intent.Kurs,
+		IntentId:       intent.ID,
+		ActionId:       actionID,
+		BrojNaloga:     intent.BrojNaloga,
+		Status:         intent.Status,
+		Valuta:         intent.ValutaOznaka,
+		Iznos:          intent.Iznos,
+		Provizija:      intent.Provizija,
+		Kurs:           intent.Kurs,
 		ValutaPrimaoca: intent.ValutaPrimaoca,
 	}
 	if intent.KrajnjiIznos != nil {

@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	auth "banka-backend/shared/auth"
 )
 
 // ─── ExchangeTransferHandler ─────────────────────────────────────────────────

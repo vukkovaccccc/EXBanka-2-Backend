@@ -87,16 +87,16 @@ type UserAccountProfit struct {
 
 // PeriodSummary je rezultat CalculateAndCollectForPeriod.
 type PeriodSummary struct {
-	ProcessedUsers     int             `json:"processedUsers"`
-	TotalCollectedRSD  decimal.Decimal `json:"-"`
-	TotalCollectedF64  float64         `json:"totalCollectedRsd"`
-	FullyCollected     int             `json:"fullyCollected"`
-	Partial            int             `json:"partial"`
-	Unpaid             int             `json:"unpaid"`
-	AlreadyCollected   int             `json:"alreadyCollected"`
-	Errors             int             `json:"errors"`
-	PeriodStart        time.Time       `json:"periodStart"`
-	PeriodEnd          time.Time       `json:"periodEnd"`
+	ProcessedUsers    int             `json:"processedUsers"`
+	TotalCollectedRSD decimal.Decimal `json:"-"`
+	TotalCollectedF64 float64         `json:"totalCollectedRsd"`
+	FullyCollected    int             `json:"fullyCollected"`
+	Partial           int             `json:"partial"`
+	Unpaid            int             `json:"unpaid"`
+	AlreadyCollected  int             `json:"alreadyCollected"`
+	Errors            int             `json:"errors"`
+	PeriodStart       time.Time       `json:"periodStart"`
+	PeriodEnd         time.Time       `json:"periodEnd"`
 }
 
 // TaxUserFilter su opcioni query filteri za porez tracking listu korisnika.
@@ -733,9 +733,10 @@ func (s *TaxService) collectOne(
 // Filteri: role (client/actuary), firstName, lastName (case-insensitive substring).
 //
 // Dug se računa kao zbir:
-//   (a) remaining_debt_rsd iz tax_records (OPEN | PARTIAL | UNPAID) tekuće godine
-//   (b) + procena oporezivog profita za tekući mesec (samo za prodaje koje još nisu
-//       pokrivene postojećim tax_records redom), preko ComputeProfitForPeriod.
+//
+//	(a) remaining_debt_rsd iz tax_records (OPEN | PARTIAL | UNPAID) tekuće godine
+//	(b) + procena oporezivog profita za tekući mesec (samo za prodaje koje još nisu
+//	    pokrivene postojećim tax_records redom), preko ComputeProfitForPeriod.
 func (s *TaxService) ListTaxEligibleUsers(ctx context.Context, filter TaxUserFilter) ([]TaxUserRow, error) {
 	now := time.Now()
 	currentYear := now.Year()

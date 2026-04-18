@@ -9,8 +9,8 @@ import (
 // ─── Greške ───────────────────────────────────────────────────────────────────
 
 var (
-	ErrExchangeRateNotFound      = errors.New("kurs nije dostupan za izabranu valutu")
-	ErrExchangeInvalidAmount     = errors.New("iznos mora biti veći od nule")
+	ErrExchangeRateNotFound        = errors.New("kurs nije dostupan za izabranu valutu")
+	ErrExchangeInvalidAmount       = errors.New("iznos mora biti veći od nule")
 	ErrExchangeProviderUnavailable = errors.New("kursna lista trenutno nije dostupna")
 )
 

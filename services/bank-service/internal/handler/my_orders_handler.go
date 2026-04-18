@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/trading"
+	auth "banka-backend/shared/auth"
 )
 
 // MyOrdersHandler serves GET /bank/trading/my-orders.

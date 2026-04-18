@@ -16,24 +16,24 @@ import (
 // ─── GORM modeli ──────────────────────────────────────────────────────────────
 
 type orderModel struct {
-	ID                int64    `gorm:"column:id;primaryKey"`
-	UserID            int64    `gorm:"column:user_id"`
-	AccountID         int64    `gorm:"column:account_id"`
-	ListingID         int64    `gorm:"column:listing_id"`
-	OrderType         string   `gorm:"column:order_type"`
-	Direction         string   `gorm:"column:direction"`
-	Quantity          int32    `gorm:"column:quantity"`
-	ContractSize      int32    `gorm:"column:contract_size"`
-	PricePerUnit      *string  `gorm:"column:price_per_unit"`
-	StopPrice         *string  `gorm:"column:stop_price"`
-	Status            string   `gorm:"column:status"`
-	ApprovedBy        *string  `gorm:"column:approved_by"`
-	IsDone            bool     `gorm:"column:is_done"`
-	RemainingPortions int32    `gorm:"column:remaining_portions"`
-	AfterHours        bool     `gorm:"column:after_hours"`
-	AllOrNone         bool     `gorm:"column:all_or_none"`
-	Margin            bool     `gorm:"column:margin"`
-	IsClient          bool     `gorm:"column:is_client"`
+	ID                int64     `gorm:"column:id;primaryKey"`
+	UserID            int64     `gorm:"column:user_id"`
+	AccountID         int64     `gorm:"column:account_id"`
+	ListingID         int64     `gorm:"column:listing_id"`
+	OrderType         string    `gorm:"column:order_type"`
+	Direction         string    `gorm:"column:direction"`
+	Quantity          int32     `gorm:"column:quantity"`
+	ContractSize      int32     `gorm:"column:contract_size"`
+	PricePerUnit      *string   `gorm:"column:price_per_unit"`
+	StopPrice         *string   `gorm:"column:stop_price"`
+	Status            string    `gorm:"column:status"`
+	ApprovedBy        *string   `gorm:"column:approved_by"`
+	IsDone            bool      `gorm:"column:is_done"`
+	RemainingPortions int32     `gorm:"column:remaining_portions"`
+	AfterHours        bool      `gorm:"column:after_hours"`
+	AllOrNone         bool      `gorm:"column:all_or_none"`
+	Margin            bool      `gorm:"column:margin"`
+	IsClient          bool      `gorm:"column:is_client"`
 	LastModified      time.Time `gorm:"column:last_modified"`
 	CreatedAt         time.Time `gorm:"column:created_at"`
 }

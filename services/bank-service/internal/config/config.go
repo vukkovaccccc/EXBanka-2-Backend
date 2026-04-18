@@ -95,7 +95,7 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		HTTPAddr: getEnv("HTTP_ADDR", "0.0.0.0:8082"),
+		HTTPAddr:        getEnv("HTTP_ADDR", "0.0.0.0:8082"),
 		GRPCAddr:        getEnv("GRPC_ADDR", "0.0.0.0:50052"),
 		UserServiceAddr: getEnv("USER_SERVICE_ADDR", "user-service:50051"),
 
@@ -109,13 +109,13 @@ func Load() (*Config, error) {
 
 		RabbitMQURL: os.Getenv("RABBITMQ_URL"), // prazno = NoOp publisher
 
-		WorkerIntervalHours: getEnvInt("WORKER_INTERVAL_HOURS", 24),
-		RetryAfterHours:     getEnvInt("RETRY_AFTER_HOURS", 72),
-		LatePaymentPenalty:  getEnvFloat("LATE_PAYMENT_PENALTY_PCT", 0.05),
+		WorkerIntervalHours:    getEnvInt("WORKER_INTERVAL_HOURS", 24),
+		RetryAfterHours:        getEnvInt("RETRY_AFTER_HOURS", 72),
+		LatePaymentPenalty:     getEnvFloat("LATE_PAYMENT_PENALTY_PCT", 0.05),
 		ExchangeRateAPIKey:     os.Getenv("EXCHANGE_RATE_API_KEY"),
 		ExchangeRateAPIBaseURL: getEnv("EXCHANGE_RATE_API_BASE_URL", "https://v6.exchangerate-api.com/v6"),
-		ExchangeSpreadRate:    getEnvFloat("EXCHANGE_SPREAD_RATE", 0.005),
-		ExchangeProvizijaRate: getEnvFloat("EXCHANGE_PROVIZIJA_RATE", 0.005),
+		ExchangeSpreadRate:     getEnvFloat("EXCHANGE_SPREAD_RATE", 0.005),
+		ExchangeProvizijaRate:  getEnvFloat("EXCHANGE_PROVIZIJA_RATE", 0.005),
 
 		CVVPepper: getEnv("CVV_PEPPER", "change-me-cvv-pepper-in-production"),
 
@@ -126,8 +126,8 @@ func Load() (*Config, error) {
 		FinnhubAPIKey:                 os.Getenv("FINNHUB_API_KEY"),
 		AlphaVantageAPIKey:            os.Getenv("ALPHAVANTAGE_API_KEY"),
 		ListingRefreshIntervalMinutes: getEnvInt("LISTING_REFRESH_INTERVAL_MINUTES", 15),
-		ListingRequireLiveQuotes: loadListingRequireLiveQuotes(),
-		StateRevenueAccountID:    getEnvInt64("STATE_REVENUE_ACCOUNT_ID", 0),
+		ListingRequireLiveQuotes:      loadListingRequireLiveQuotes(),
+		StateRevenueAccountID:         getEnvInt64("STATE_REVENUE_ACCOUNT_ID", 0),
 	}, nil
 }
 

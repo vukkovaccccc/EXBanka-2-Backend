@@ -7,16 +7,16 @@ import (
 	"strconv"
 	"strings"
 
-	authpkg "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	authpkg "banka-backend/shared/auth"
 )
 
 // InternalActuaryHandler vrši HTTP operacije kreiranja i brisanja aktuar zapisa.
 // Poziva ga isključivo user-service kada zaposleni dobije ili izgubi SUPERVISOR/AGENT permisiju.
 // Autentifikacija: JWT access token sa user_type == "ADMIN".
 type InternalActuaryHandler struct {
-	service       domain.ActuaryService
-	jwtSecret     string
+	service   domain.ActuaryService
+	jwtSecret string
 }
 
 func NewInternalActuaryHandler(service domain.ActuaryService, jwtSecret string) *InternalActuaryHandler {
@@ -85,8 +85,8 @@ func (h *InternalActuaryHandler) handleCreate(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":          a.ID,
-		"employee_id": a.EmployeeID,
+		"id":           a.ID,
+		"employee_id":  a.EmployeeID,
 		"actuary_type": string(a.ActuaryType),
 	})
 }

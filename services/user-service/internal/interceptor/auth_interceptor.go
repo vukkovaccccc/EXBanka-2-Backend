@@ -7,8 +7,8 @@ import (
 	"context"
 
 	pb "banka-backend/proto/user"
-	auth "banka-backend/shared/auth"
 	"banka-backend/services/user-service/internal/utils"
+	auth "banka-backend/shared/auth"
 
 	"google.golang.org/grpc"
 )

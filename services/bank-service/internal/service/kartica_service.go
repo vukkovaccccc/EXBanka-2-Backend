@@ -407,8 +407,8 @@ func validateOvlascenoLice(ol *domain.OvlascenoLiceInput) error {
 //     - Pogrešan OTP: incrementuje Attempts i re-upisuje u Redis; posle maxOTPAttempts briše zahtev.
 //  3. TOCTOU zaštita: re-provera limita pre kreiranja (između Koraka 1 i 2 neko je možda dodao karticu).
 //  4. Generisanje podataka kartice (isti helper kao Flow 1).
-//  5a. Ako nema ovlašćenog lica: repo.CreateKartica (jednostavan insert).
-//  5b. Ako postoji ovlašćeno lice: repo.CreateKarticaSaOvlascenoLicem (atomična transakcija).
+//     5a. Ako nema ovlašćenog lica: repo.CreateKartica (jednostavan insert).
+//     5b. Ako postoji ovlašćeno lice: repo.CreateKarticaSaOvlascenoLicem (atomična transakcija).
 //  6. Brisanje Redis ključa — zahtev je ispunjen.
 func (s *karticaService) ConfirmKartica(ctx context.Context, input domain.ConfirmKarticaInput) (int64, error) {
 	// ── 1. Dohvati state iz Redisa ───────────────────────────────────────────
