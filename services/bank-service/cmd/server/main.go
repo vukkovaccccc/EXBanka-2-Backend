@@ -198,8 +198,12 @@ func main() {
 	karticaRequestHandler := handler.NewKarticaRequestHandler(karticaService, userClient, cfg.JWTAccessSecret, accountPublisher)
 	klientKarticeHandler := handler.NewKlientKarticeHandler(karticaService, cfg.JWTAccessSecret)
 
-	portfolioHandler := handler.NewPortfolioHandler(db, listingService, cfg.JWTAccessSecret)
-	taxHandler := handler.NewTaxHandler(db, exchangeService, userClient, cfg.JWTAccessSecret, cfg.StateRevenueAccountID)
+	// TaxService — jedinstvena poslovna logika za obračun i naplatu poreza na
+	// kapitalnu dobit (15%). Deli je TaxHandler, MonthlyTaxWorker i PortfolioHandler.
+	taxService := service.NewTaxService(db, exchangeService, userClient, cfg.StateRevenueAccountID)
+
+	portfolioHandler := handler.NewPortfolioHandler(db, listingService, taxService, cfg.JWTAccessSecret)
+	taxHandler := handler.NewTaxHandler(taxService, cfg.JWTAccessSecret)
 	myOrdersHandler := handler.NewMyOrdersHandler(tradingService, cfg.JWTAccessSecret)
 	tradingFXHandler := handler.NewTradingFXHandler(tradingService, accountService, exchangeService, cfg.JWTAccessSecret)
 	fundHandler := handler.NewFundHandler(db, exchangeService, cfg.JWTAccessSecret)
@@ -306,8 +310,22 @@ func main() {
 	dailyLimitResetWorker := worker.NewDailyLimitResetWorker(actuaryService)
 	go dailyLimitResetWorker.Start(ctx)
 
-	// ── 7f. Start MonthlyTaxWorker (obračunava porez na kapitalnu dobit 1. u mesecu) ─
-	monthlyTaxWorker := worker.NewMonthlyTaxWorker(db, exchangeService)
+	// ── 7f. Start MonthlyTaxWorker (obračunava + naplaćuje porez 1. u mesecu) ─
+	// Adapter pretvara (year, month) u kalendarski prozor i loguje summary.
+	// Držimo ga ovde (a ne u worker paketu) kako worker ne bi uvozio service
+	// paket — izbegavamo cyclic import sa listing_service.go.
+	taxRunner := func(ctx context.Context, year int, month time.Month) error {
+		start, end := service.MonthWindow(year, month, time.Local)
+		summary, err := taxService.CalculateAndCollectForPeriod(ctx, start, end, service.TaxTriggeredByCron)
+		if err != nil {
+			return err
+		}
+		log.Printf("[main] MonthlyTaxWorker %d-%02d done — processed=%d collected=%.2f RSD (full=%d partial=%d unpaid=%d errors=%d)",
+			year, int(month), summary.ProcessedUsers, summary.TotalCollectedF64,
+			summary.FullyCollected, summary.Partial, summary.Unpaid, summary.Errors)
+		return nil
+	}
+	monthlyTaxWorker := worker.NewMonthlyTaxWorker(taxRunner)
 	go monthlyTaxWorker.Start(ctx)
 
 	// ── 7b. Start ActuaryConsumer (RabbitMQ event listener) ──────────────────

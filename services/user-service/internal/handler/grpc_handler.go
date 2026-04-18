@@ -1070,8 +1070,13 @@ func (h *UserHandler) SearchClients(ctx context.Context, req *pb.SearchClientsRe
 	}
 
 	// ── 6. Map & return ───────────────────────────────────────────────────────
+	// Sistemski nalog drzava@exbanka.rs je isključen iz picker-a — zaposleni ga
+	// nikada ne sme videti kao izbor za otvaranje računa, kartice ili kredita.
 	previews := make([]*pb.ClientPreview, 0, len(rows))
 	for _, row := range rows {
+		if strings.EqualFold(strings.TrimSpace(row.Email), "drzava@exbanka.rs") {
+			continue
+		}
 		previews = append(previews, &pb.ClientPreview{
 			Id:        row.ID,
 			FirstName: row.FirstName,

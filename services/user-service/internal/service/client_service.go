@@ -7,12 +7,25 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	db "banka-backend/services/user-service/internal/database/sqlc"
 	"banka-backend/services/user-service/internal/domain"
 )
+
+// drzavaSystemEmail je sistemski nalog preko koga se knjiži porez na kapitalnu
+// dobit. Isključuje se iz svih biranja/listinga namenjenih zaposlenima (picker-a
+// za otvaranje računa, kartica, kredita). Sve provere koriste case-insensitive
+// match preko strings.EqualFold.
+const drzavaSystemEmail = "drzava@exbanka.rs"
+
+// isSystemClient vraća true za sistemske naloge koji ne smeju da se pojave u
+// listama klijenata koje vidi zaposleni.
+func isSystemClient(email string) bool {
+	return strings.EqualFold(strings.TrimSpace(email), drzavaSystemEmail)
+}
 
 // clientService implements domain.ClientService.
 // The sqlc Querier is injected as the data-access (repository) layer.
@@ -169,6 +182,11 @@ func (s *clientService) ListClients(ctx context.Context, filter domain.ClientFil
 
 	summaries := make([]domain.ClientSummary, 0, len(rows))
 	for _, r := range rows {
+		// Sistemski nalog države ne sme da se pojavi u picker-ima
+		// za otvaranje računa, kartice ili odobravanje kredita.
+		if isSystemClient(r.Email) {
+			continue
+		}
 		summaries = append(summaries, domain.ClientSummary{
 			ID:          r.ID,
 			FirstName:   r.FirstName,
