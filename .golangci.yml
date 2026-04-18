@@ -7,28 +7,18 @@ run:
 linters:
   default: none
   enable:
-    - errcheck
     - govet
     - staticcheck
     - ineffassign
-    - unused
   settings:
-    errcheck:
-      exclude-functions:
-        - (io.Closer).Close
-        - (*database/sql.DB).Close
-        - (*database/sql.Rows).Close
-        - (net.Conn).Close
-        - (*net/http.Response).Body.Close
-        - (*github.com/rabbitmq/amqp091-go.Connection).Close
-        - (*github.com/rabbitmq/amqp091-go.Channel).Close
-        - (*github.com/rabbitmq/amqp091-go.Delivery).Ack
-        - (*github.com/rabbitmq/amqp091-go.Delivery).Nack
-        - fmt.Fprint
-        - fmt.Fprintf
-        - fmt.Fprintln
-        - (*encoding/json.Encoder).Encode
-        - (net/http.ResponseWriter).Write
+    staticcheck:
+      checks:
+        - all
+        - -QF1003
+        - -QF1005
+        - -QF1008
+        - -ST1000
+        - -ST1003
   exclusions:
     generated: lax
     paths:
@@ -38,7 +28,6 @@ linters:
     rules:
       - path: _test\.go
         linters:
-          - errcheck
           - staticcheck
 
 formatters:

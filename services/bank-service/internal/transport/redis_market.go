@@ -70,7 +70,7 @@ type NoOpMarketModeStore struct{}
 var _ domain.MarketModeStore = (*NoOpMarketModeStore)(nil)
 
 func (s *NoOpMarketModeStore) SetTestMode(_ context.Context, _ bool) error {
-	return fmt.Errorf("Redis nije konfigurisan — postavi REDIS_URL env varijablu")
+	return fmt.Errorf("redis nije konfigurisan — postavi REDIS_URL env varijablu")
 }
 
 func (s *NoOpMarketModeStore) IsTestMode(_ context.Context) (bool, error) {

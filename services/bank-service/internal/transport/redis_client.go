@@ -89,11 +89,11 @@ type NoOpCardRequestStore struct{}
 
 func (s *NoOpCardRequestStore) SaveCardRequest(_ context.Context, ownerID int64, _ domain.CardRequestState, _ time.Duration) error {
 	log.Printf("[redis] NoOp — CardRequest za owner_id=%d nije sačuvan (Redis nije konfigurisan)", ownerID)
-	return fmt.Errorf("Redis nije konfigurisan — postavi REDIS_URL env varijablu")
+	return fmt.Errorf("redis nije konfigurisan — postavi REDIS_URL env varijablu")
 }
 
 func (s *NoOpCardRequestStore) GetCardRequest(_ context.Context, _ int64) (*domain.CardRequestState, error) {
-	return nil, fmt.Errorf("Redis nije konfigurisan — postavi REDIS_URL env varijablu")
+	return nil, fmt.Errorf("redis nije konfigurisan — postavi REDIS_URL env varijablu")
 }
 
 func (s *NoOpCardRequestStore) DeleteCardRequest(_ context.Context, _ int64) error {
