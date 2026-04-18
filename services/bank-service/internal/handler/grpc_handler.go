@@ -162,6 +162,15 @@ func (h *BankHandler) CreateAccount(ctx context.Context, req *pb.CreateAccountRe
 		log.Printf("[create-account] upozorenje: klijent ID=%d nema email — notifikacija neće biti poslata", req.VlasnikId)
 	}
 
+	// ── Korak 1a: Zaštita sistemskog naloga države ───────────────────────────
+	// drzava@exbanka.rs je sistemski entitet sa tačno jednim RSD računom za
+	// prijem poreza. Kreiranje dodatnih računa za taj nalog nije dozvoljeno,
+	// bez obzira na to ko šalje zahtev (čak i direktan poziv API-ja je blokiran).
+	if strings.EqualFold(email, "drzava@exbanka.rs") {
+		return nil, status.Error(codes.PermissionDenied,
+			"kreiranje dodatnih računa za sistemski nalog države nije dozvoljeno")
+	}
+
 	// ── Korak 2: Kreiranje računa (postojeća logika) ─────────────────────────
 	input := domain.CreateAccountInput{
 		ZaposleniID:      req.ZaposleniId,

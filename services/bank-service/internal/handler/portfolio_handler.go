@@ -19,6 +19,7 @@ import (
 
 	auth "banka-backend/shared/auth"
 	"banka-backend/services/bank-service/internal/domain"
+	"banka-backend/services/bank-service/internal/service"
 
 	"gorm.io/gorm"
 )
@@ -48,18 +49,22 @@ func (publicShareRow) TableName() string { return "core_banking.public_shares" }
 type PortfolioHandler struct {
 	db             *gorm.DB
 	listingService domain.ListingService
+	taxService     *service.TaxService
 	jwtSecret      string
 }
 
 // NewPortfolioHandler constructs the handler with its dependencies.
+// taxService may be nil (fields taxPaidRsd/taxUnpaid will be zero in that case).
 func NewPortfolioHandler(
 	db *gorm.DB,
 	listingService domain.ListingService,
+	taxService *service.TaxService,
 	jwtSecret string,
 ) *PortfolioHandler {
 	return &PortfolioHandler{
 		db:             db,
 		listingService: listingService,
+		taxService:     taxService,
 		jwtSecret:      jwtSecret,
 	}
 }
@@ -235,20 +240,18 @@ func (h *PortfolioHandler) getMyPortfolio(w http.ResponseWriter, r *http.Request
 	}
 
 	// ── 4. Load tax data (paid this year, unpaid this month) ─────────────────
+	// Delegirano na service.TaxService — jedinstveni izvor istine za tax_records.
 	now := time.Now()
-	var taxPaid float64
-	h.db.WithContext(ctx).Raw(`
-		SELECT COALESCE(SUM(amount_rsd), 0)
-		FROM core_banking.tax_records
-		WHERE user_id = ? AND year = ? AND paid = TRUE
-	`, userID, now.Year()).Scan(&taxPaid)
-
-	var taxUnpaid float64
-	h.db.WithContext(ctx).Raw(`
-		SELECT COALESCE(SUM(amount_rsd), 0)
-		FROM core_banking.tax_records
-		WHERE user_id = ? AND year = ? AND month = ? AND paid = FALSE
-	`, userID, now.Year(), int(now.Month())).Scan(&taxUnpaid)
+	var taxPaid, taxUnpaid float64
+	if h.taxService != nil {
+		if v, err := h.taxService.UserTaxPaidForYear(ctx, userID, now.Year()); err == nil {
+			taxPaid = v
+		}
+		cmStart, cmEnd := service.CurrentMonthWindow(now)
+		if v, err := h.taxService.UserTaxUnpaidForMonth(ctx, userID, cmStart, cmEnd); err == nil {
+			taxUnpaid = v
+		}
+	}
 
 	// ── 5. Enrich with current listing data ────────────────────────────────────
 	holdings := make([]holdingResponse, 0, len(rows))
