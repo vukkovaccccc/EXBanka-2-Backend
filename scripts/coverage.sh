@@ -19,17 +19,17 @@ go test ./services/... ./shared/... \
     -count=1 \
     "$@"
 
-echo ""
-echo "═══════════════════════════════════════════════════════════"
-echo "  Raw coverage (all packages)"
-echo "═══════════════════════════════════════════════════════════"
-go tool cover -func="$COVERAGE_RAW" | grep "^total:"
-
 # ── Filter out excluded packages ─────────────────────────────────────────────
 grep -vE \
     '/cmd/|/internal/repository/|/internal/smtp/|/internal/transport/|/internal/database/|/internal/worker/|/internal/testutil/|bank-service/internal/domain/|bank-service/internal/handler/|/mocks/|/tests/|/utils/rabbitmq\.go' \
     "$COVERAGE_RAW" \
     > "$COVERAGE_FILTERED"
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  Raw coverage (all packages)"
+echo "═══════════════════════════════════════════════════════════"
+go tool cover -func="$COVERAGE_FILTERED" | grep "^total:"
 
 FILTERED_TOTAL=$(go tool cover -func="$COVERAGE_FILTERED" | grep "^total:" | awk '{print $3}')
 PERCENT=${FILTERED_TOTAL//%/}

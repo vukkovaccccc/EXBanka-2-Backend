@@ -112,3 +112,51 @@ func TestLoad_InvalidFloatFallsBackToDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.InDelta(t, 0.05, cfg.LatePaymentPenalty, 1e-9, "invalid float should use default")
 }
+
+func TestLoad_ValidInt64EnvVar(t *testing.T) {
+	setRequired(t)
+	t.Setenv("STATE_REVENUE_ACCOUNT_ID", "12345")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, int64(12345), cfg.StateRevenueAccountID)
+}
+
+func TestLoad_InvalidInt64FallsBackToDefault(t *testing.T) {
+	setRequired(t)
+	t.Setenv("STATE_REVENUE_ACCOUNT_ID", "not-a-number")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), cfg.StateRevenueAccountID)
+}
+
+func TestLoad_ListingStrictExternalTrue(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LISTING_STRICT_EXTERNAL", "true")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.True(t, cfg.ListingRequireLiveQuotes)
+}
+
+func TestLoad_ListingStrictExternalOne(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LISTING_STRICT_EXTERNAL", "1")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.True(t, cfg.ListingRequireLiveQuotes)
+}
+
+func TestLoad_ListingRequireLiveQuotesFalse(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LISTING_REQUIRE_LIVE_QUOTES", "false")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.False(t, cfg.ListingRequireLiveQuotes)
+}
+
+func TestLoad_ListingRequireLiveQuotesTrue(t *testing.T) {
+	setRequired(t)
+	t.Setenv("LISTING_REQUIRE_LIVE_QUOTES", "true")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.True(t, cfg.ListingRequireLiveQuotes)
+}

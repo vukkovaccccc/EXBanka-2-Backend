@@ -426,3 +426,26 @@ func TestApprovePendingAction_Success(t *testing.T) {
 	assert.Equal(t, "ODOBREN", status)
 	assert.Equal(t, now, ts)
 }
+
+func TestFindAccountIDByNumber_Success(t *testing.T) {
+	ar := &mocks.MockAccountRepository{}
+	cr := &mocks.MockCurrencyRepository{}
+	ctx := context.Background()
+	ar.On("FindAccountIDByNumber", ctx, "666000112000000001").Return(int64(42), nil)
+
+	svc := service.NewAccountService(ar, cr)
+	got, err := svc.FindAccountIDByNumber(ctx, "666000112000000001")
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), got)
+}
+
+func TestFindAccountIDByNumber_Error(t *testing.T) {
+	ar := &mocks.MockAccountRepository{}
+	cr := &mocks.MockCurrencyRepository{}
+	ctx := context.Background()
+	ar.On("FindAccountIDByNumber", ctx, "INVALID").Return(int64(0), errors.New("not found"))
+
+	svc := service.NewAccountService(ar, cr)
+	_, err := svc.FindAccountIDByNumber(ctx, "INVALID")
+	assert.Error(t, err)
+}
